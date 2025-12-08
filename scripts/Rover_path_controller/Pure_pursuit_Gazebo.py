@@ -243,7 +243,7 @@ def main(args=None):
     node.create_subscription(Odometry, "/odom", odom_callback, 10)
     
     # TO DO: Subscribe to obstacles topic
-    # node.create_subscription(ObstacleArray, "/obstacles", obstacles_callback, 10)
+    node.create_subscription(ObstacleArray, '/obstacles', obstacles_callback, 10)
 
     # Publisher
     vel_pub = node.create_publisher(Twist, "/cmd_vel", 10)

@@ -21,7 +21,11 @@ obstacle_pub = None
 def scan_callback(scan_msg):
     # Called when new LiDAR data arrives
     # Calls: scan_to_xy → cluster_points → extract_obstacles → publish_obstacles
-    pass
+
+    points  = scan_to_xy(scan_msg)
+
+
+
 
 
 # ═══════════════════════════════════════════
@@ -30,11 +34,29 @@ def scan_callback(scan_msg):
 def scan_to_xy(scan):
     # Convert LaserScan → XY points
     # Returns: numpy array (N, 2)
-    pass
+
+    ranges = scan.ranges
+    
+    angle = scan.angle_min
+
+    points = np.zeros((len(ranges)), 2)
+    
+    for r in ranges:
+        x = r * np.cos(angle)
+        y = r * np.sin(angle)
+
+        points[(angle/(scan.angle_increment))] = [x,y]
+            
+        angle+= scan.angle_increment 
+
+    return points
+
+    
 
 
 def cluster_points(points):
     # Run DBSCAN on points
+
     # Returns: cluster labels
     pass
 
@@ -57,11 +79,9 @@ def main(args = None):
     rclpy.init(args=args)
     node = rclpy.create_node("detectObstacles")
 
-    node.create_subscription(LaserScan, '/scan', 10,scan_callback )
+    node.create_subscription(LaserScan, '/scan', 10, scan_callback )
 
-    obstacle_pub = node.create_publisher()
-
-# can you help me? really quick :) -Camila
+    obstacle_pub = node.create_publisher(ObstacleArray, 'obstacles', 10)
 
 if __name__ == '__main__':
     main()

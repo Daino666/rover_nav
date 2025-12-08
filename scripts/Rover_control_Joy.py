@@ -24,8 +24,8 @@ def play_sound(file_path):
 def joy_callback(joy_msg):
     global right_velocity, left_velocity, node, prev_B_button
 
-    vertical = -joy_msg.axes[4]      # forward/backward
-    horizontal = joy_msg.axes[3]     # turning
+    vertical = -joy_msg.axes[3]      # forward/backward
+    horizontal = joy_msg.axes[2]     # turning
     B_button = joy_msg.buttons[1]
 
     node.get_logger().info(f"vertical={vertical:.3f}, horizontal={horizontal:.3f}")
@@ -48,8 +48,8 @@ def main(args=None):
     node = Node("six_wheel_controller")
 
     num_axes = 6
-    right_wheels = [0, 2]
-    left_wheels = [3, 5]
+    right_wheels = [0, 1 , 2]
+    left_wheels = [3, 4 ,5]
 
     # Create publishers and clients
     clients = []
