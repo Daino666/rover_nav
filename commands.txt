@@ -1,1 +1,11 @@
 sudo ip link set can0 up type can bitrate 250000
+
+
+ros2 launch odrive_can example_launch.yaml
+
+ros2 run joy joy_node
+
+ros2 run rover_nav Rover_control_Joy.py
+
+
+
