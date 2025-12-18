@@ -15,6 +15,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
 install(
   PROGRAMS
     scripts/Rover_control_Joy.py
+    scripts/LeapOne_test_encoders.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

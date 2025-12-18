@@ -10,8 +10,6 @@ import subprocess
 # Global variables for velocities
 target_right_velocity = 0.0
 target_left_velocity = 0.0
-current_right_velocity = 0.0
-current_left_velocity = 0.0
 trigger = 0
 stop_button = 0
 
@@ -21,44 +19,33 @@ B_SOUND_FILE = "/home/daino/colcon_ws/src/rover_nav/scripts/Sounds/walle.wav"
 # Track previous button state
 prev_B_button = 0
 
-# Smoothing factor (0.0 to 1.0, higher = faster response)
-SMOOTHING_FACTOR = 0.15
-
 def play_sound(file_path):
-    """Play a sound using aplay (non-blocking)."""
     subprocess.Popen(["aplay", file_path])
-
-def smooth_velocity(current, target, factor):
-    """Smoothly transition from current to target velocity."""
-    return target
 
 def joy_callback(joy_msg):
     global target_right_velocity, target_left_velocity, node, prev_B_button, trigger, stop_button
 
-    vertical = -joy_msg.axes[3]      # forward/backward
-    horizontal = joy_msg.axes[2]     # turning
+    vertical = -joy_msg.axes[3]
+    horizontal =    0 #joy_msg.axes[]
     B_button = joy_msg.buttons[1]
-    trigger = joy_msg.buttons[7]     # trigger 
-    stop_button = joy_msg.buttons[6] # STOP button
+    trigger = joy_msg.buttons[7]
+    stop_button = joy_msg.buttons[6]
     
     node.get_logger().info(f"vertical={vertical:.3f}, horizontal={horizontal:.3f}, trigger={trigger}, STOP={stop_button}")
 
-    # Differential drive + inverted left side
     target_right_velocity = -(vertical - horizontal)
     target_left_velocity = (vertical + horizontal)
 
-    target_right_velocity *= 3
-    target_left_velocity *= 3
+    target_right_velocity *= 1.5
+    target_left_velocity *= 1.5
 
-    # Play sound only when B button is pressed (0 → 1)
     if B_button == 1 and prev_B_button == 0:
         play_sound(B_SOUND_FILE)
 
-    # Update previous button state
     prev_B_button = B_button
 
 def main(args=None):
-    global target_right_velocity, target_left_velocity, current_right_velocity, current_left_velocity, node, trigger, stop_button
+    global target_right_velocity, target_left_velocity, node, trigger, stop_button
 
     rclpy.init(args=args)
     node = Node("six_wheel_controller")
@@ -67,7 +54,6 @@ def main(args=None):
     right_wheels = [0, 1, 2]
     left_wheels = [3, 4, 5]
 
-    # Create publishers and clients
     clients = []
     pubs = []
     for i in range(num_axes):
@@ -76,25 +62,21 @@ def main(args=None):
         clients.append(node.create_client(AxisState, srv_name))
         pubs.append(node.create_publisher(ControlMessage, topic_name, 10))
 
-    # Wait for all services
     for i, client in enumerate(clients):
         while not client.wait_for_service(timeout_sec=1.0):
             node.get_logger().info(f"Waiting for service {client.srv_name}...")
 
-    # Set CLOSED_LOOP_CONTROL mode
     for i, client in enumerate(clients):
         req = AxisState.Request()
-        req.axis_requested_state = 8  # CLOSED_LOOP_CONTROL
+        req.axis_requested_state = 8
         node.get_logger().info(f"Setting odrive_axis{i} to CLOSED_LOOP_CONTROL...")
         future = client.call_async(req)
         rclpy.spin_until_future_complete(node, future)
         time.sleep(0.1)
 
-    # Subscribe to joystick
     node.create_subscription(Joy, "/joy", joy_callback, 10)
     node.get_logger().info("✅ Ready to receive joystick input.")
 
-    # Main loop: publish continuously
     publish_rate_hz = 20.0
     publish_period = 1.0 / publish_rate_hz
 
@@ -102,50 +84,37 @@ def main(args=None):
         while rclpy.ok():
             rclpy.spin_once(node, timeout_sec=0.01)
             
-            # EMERGENCY STOP - immediately set everything to zero
+            # Determine velocity to send
             if stop_button == 1:
-                current_right_velocity = 0.0
-                current_left_velocity = 0.0
-                target_right_velocity = 0.0
-                target_left_velocity = 0.0
+                vel_right = 0.0
+                vel_left = 0.0
                 node.get_logger().warn("🛑 EMERGENCY STOP ACTIVATED!")
-            
-            # Normal operation with trigger
             elif trigger == 1:
-                # Smoothly transition to target velocities
-                current_right_velocity = smooth_velocity(current_right_velocity, target_right_velocity, SMOOTHING_FACTOR)
-                current_left_velocity = smooth_velocity(current_left_velocity, target_left_velocity, SMOOTHING_FACTOR)
+                vel_right = target_right_velocity
+                vel_left = target_left_velocity
             else:
-                # When trigger is released, smoothly ramp down to zero
-                current_right_velocity = smooth_velocity(current_right_velocity, 0.0, SMOOTHING_FACTOR)
-                current_left_velocity = smooth_velocity(current_left_velocity, 0.0, SMOOTHING_FACTOR)
+                vel_right = 0.0
+                vel_left = 0.0
             
-            # Create and publish messages
+            # Send directly - ODrive handles ramping
             right_msg = ControlMessage()
-            right_msg.control_mode = 2
-            right_msg.input_mode = 1
+            right_msg.control_mode = 2   # Velocity control
+            right_msg.input_mode = 2     # VEL_RAMP (ODrive handles smoothing)
             right_msg.input_pos = 0.0
-            right_msg.input_vel = current_right_velocity
+            right_msg.input_vel = vel_right
             right_msg.input_torque = 0.0
 
             left_msg = ControlMessage()
             left_msg.control_mode = 2
-            left_msg.input_mode = 1
+            left_msg.input_mode = 2
             left_msg.input_pos = 0.0
-            left_msg.input_vel = current_left_velocity
+            left_msg.input_vel = vel_left
             left_msg.input_torque = 0.0
 
-
-            start = time.perf_counter()
-
-            # Publish to both sides
             for i in right_wheels:
                 pubs[i].publish(right_msg)
             for i in left_wheels:
                 pubs[i].publish(left_msg)
-                
-            elapsed = time.perf_counter() - start
-            node.get_logger().info(f"6 publishes took {elapsed*1_000_000:.1f} µs")
 
             time.sleep(publish_period)
 
