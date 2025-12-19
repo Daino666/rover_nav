@@ -26,7 +26,7 @@ def joy_callback(joy_msg):
     global target_right_velocity, target_left_velocity, node, prev_B_button, trigger, stop_button
 
     vertical = -joy_msg.axes[3]
-    horizontal =    0 #joy_msg.axes[]
+    horizontal =  joy_msg.axes[2]
     B_button = joy_msg.buttons[1]
     trigger = joy_msg.buttons[7]
     stop_button = joy_msg.buttons[6]
@@ -36,8 +36,8 @@ def joy_callback(joy_msg):
     target_right_velocity = -(vertical - horizontal)
     target_left_velocity = (vertical + horizontal)
 
-    target_right_velocity *= 1.5
-    target_left_velocity *= 1.5
+    target_right_velocity *= .7
+    target_left_velocity *=  .7
 
     if B_button == 1 and prev_B_button == 0:
         play_sound(B_SOUND_FILE)
