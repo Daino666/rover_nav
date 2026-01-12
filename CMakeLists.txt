@@ -16,6 +16,7 @@ install(
   PROGRAMS
     scripts/Rover_control_Joy.py
     scripts/LeapOne_test_encoders.py
+    scripts/Odom.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

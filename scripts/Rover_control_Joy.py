@@ -11,41 +11,54 @@ import subprocess
 target_right_velocity = 0.0
 target_left_velocity = 0.0
 trigger = 0
-stop_button = 0
+turn_button = 0
+
+# Turn parameters - TUNE THESE FOR YOUR ROVER
+TURN_VELOCITY = 1.0      # rev/s - adjust based on your setup
+TURN_DURATION = 2.1      # seconds - tune this for exactly 180°
+
+# State tracking
+prev_turn_button = 0
+is_turning = False
+turn_start_time = 0.0
 
 # Path to sound file
-B_SOUND_FILE = "/home/daino/colcon_ws/src/rover_nav/scripts/Sounds/walle.wav"
-
-# Track previous button state
+B_SOUND_FILE = "/home/daino/colcon_ws/src/rover_nav/scripts/Sounds/Merry_Chirstmas.wav"
 prev_B_button = 0
 
 def play_sound(file_path):
     subprocess.Popen(["aplay", file_path])
 
 def joy_callback(joy_msg):
-    global target_right_velocity, target_left_velocity, node, prev_B_button, trigger, stop_button
+    global target_right_velocity, target_left_velocity, node, prev_B_button
+    global trigger, turn_button, prev_turn_button, is_turning, turn_start_time
 
     vertical = -joy_msg.axes[3]
-    horizontal =  joy_msg.axes[2]
+    horizontal = joy_msg.axes[2]
     B_button = joy_msg.buttons[1]
     trigger = joy_msg.buttons[7]
-    stop_button = joy_msg.buttons[6]
+    turn_button = joy_msg.buttons[6]
     
-    node.get_logger().info(f"vertical={vertical:.3f}, horizontal={horizontal:.3f}, trigger={trigger}, STOP={stop_button}")
+    node.get_logger().info(f"vertical={vertical:.3f}, horizontal={horizontal:.3f}, trigger={trigger}, turn={turn_button}")
 
     target_right_velocity = -(vertical - horizontal)
     target_left_velocity = (vertical + horizontal)
 
-    target_right_velocity *= .7
-    target_left_velocity *=  .7
+    # Detect rising edge of turn button to start 180° turn
+    if turn_button == 1 and prev_turn_button == 0 and not is_turning:
+        is_turning = True
+        turn_start_time = time.time()
+        node.get_logger().info("🔄 Starting 180° turn...")
+
+    prev_turn_button = turn_button
 
     if B_button == 1 and prev_B_button == 0:
         play_sound(B_SOUND_FILE)
-
     prev_B_button = B_button
 
 def main(args=None):
-    global target_right_velocity, target_left_velocity, node, trigger, stop_button
+    global target_right_velocity, target_left_velocity, node
+    global trigger, is_turning, turn_start_time
 
     rclpy.init(args=args)
     node = Node("six_wheel_controller")
@@ -84,11 +97,19 @@ def main(args=None):
         while rclpy.ok():
             rclpy.spin_once(node, timeout_sec=0.01)
             
-            # Determine velocity to send
-            if stop_button == 1:
-                vel_right = 0.0
-                vel_left = 0.0
-                node.get_logger().warn("🛑 EMERGENCY STOP ACTIVATED!")
+            # Check if 180° turn is in progress
+            if is_turning:
+                elapsed = time.time() - turn_start_time
+                if elapsed < TURN_DURATION:
+                    # Spin in place: right forward, left backward
+                    vel_right = TURN_VELOCITY
+                    vel_left = TURN_VELOCITY  # Same sign = opposite direction due to mounting
+                else:
+                    # Turn complete
+                    is_turning = False
+                    vel_right = 0.0
+                    vel_left = 0.0
+                    node.get_logger().info("✅ 180° turn complete!")
             elif trigger == 1:
                 vel_right = target_right_velocity
                 vel_left = target_left_velocity
@@ -96,10 +117,9 @@ def main(args=None):
                 vel_right = 0.0
                 vel_left = 0.0
             
-            # Send directly - ODrive handles ramping
             right_msg = ControlMessage()
-            right_msg.control_mode = 2   # Velocity control
-            right_msg.input_mode = 2     # VEL_RAMP (ODrive handles smoothing)
+            right_msg.control_mode = 2
+            right_msg.input_mode = 2
             right_msg.input_pos = 0.0
             right_msg.input_vel = vel_right
             right_msg.input_torque = 0.0
