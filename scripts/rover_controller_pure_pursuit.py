@@ -140,8 +140,8 @@ def control_loop(node):
     curvature = calc_curv(local_x, local_y)
 
     angular = curvature * BASE_VELOCITY
-    v_right_mps = BASE_VELOCITY + angular * (TRACK_WIDTH / 2)
-    v_left_mps  = BASE_VELOCITY - angular * (TRACK_WIDTH / 2)
+    v_right_mps = BASE_VELOCITY + angular * (WHEEL_BASE / 2)
+    v_left_mps  = BASE_VELOCITY - angular * (WHEEL_BASE / 2)
 
     v_right = mps_to_revs(v_right_mps)
     v_left  = mps_to_revs(v_left_mps)
