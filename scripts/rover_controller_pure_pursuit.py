@@ -136,10 +136,6 @@ def control_loop(node):
 
     local_x, local_y = point_global_to_local(goal_point, car_yaw, car_global_axis)
 
-    if local_x < 0:
-        publish_wheel_velocities(0.0, 0.0)
-        node.get_logger().warn("⚠️ Goal is behind rover!", throttle_duration_sec=1.0)
-        return
 
     curvature = calc_curv(local_x, local_y)
 
