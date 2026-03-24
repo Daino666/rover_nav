@@ -7,13 +7,6 @@ import os
 
 def generate_launch_description():
     # Path to the odrive launch file
-    odrive_launch = IncludeLaunchDescription(
-        FrontendLaunchDescriptionSource(
-            os.path.join(get_package_share_directory('odrive_can'), 
-                        'launch',
-                        'example_launch.yaml')
-        )
-    )
     
     # Joy node
     joy_node = Node(
@@ -22,17 +15,26 @@ def generate_launch_description():
         name='joy_node',
         output='screen'
     )
-    
-    # Your rover control node
-    rover_control = Node(
+
+    rover_control_pure_pursuit = Node(
         package='rover_nav',
-        executable='Rover_control_Joy.py',
+        executable='rover_controller_pure_pursuit.py',
         name='rover_control',
         output='screen'
     )
-    
+
+    # Your rover control node
+    joy_safety = Node(
+        package='rover_nav',
+        executable='joy_safety.py',
+        name='rover_control',
+        output='screen'
+    )
+
+
     return LaunchDescription([
-        odrive_launch,
+        
         joy_node,
-        rover_control
+        rover_control_pure_pursuit,
+        joy_safety
     ])

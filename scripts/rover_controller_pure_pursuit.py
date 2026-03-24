@@ -26,7 +26,7 @@ GOAL_TOLERANCE = 0.3
 MAX_WHEEL_VEL = 1.0
 WHEEL_RADIUS = 0.111
 
-goal_point = [2.0, 2.0]
+goal_point = [2.0, 0]
 
 right_wheels = [0, 1, 2]
 left_wheels  = [3, 4, 5]
