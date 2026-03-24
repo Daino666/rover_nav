@@ -27,14 +27,14 @@ def generate_launch_description():
     joy_safety = Node(
         package='rover_nav',
         executable='joy_safety.py',
-        name='rover_control',
+        name='joy_safety',
         output='screen'
     )
 
 
     return LaunchDescription([
         
-        joy_node,
         rover_control_pure_pursuit,
+        joy_node,
         joy_safety
     ])

@@ -66,11 +66,9 @@ def joy_callback(joy_msg):
 
     vertical   = apply_deadzone(-joy_msg.axes[3])
     horizontal = apply_deadzone(joy_msg.axes[2])
-    B_button   = joy_msg.buttons[1]
-    Y_button   = joy_msg.buttons[3]
-    X_button   = joy_msg.buttons[2]
+    Y_button   = joy_msg.buttons[4]
+    X_button   = joy_msg.buttons[3]
     trigger    = joy_msg.buttons[7]
-    turn_button = joy_msg.buttons[6]
 
     # Safety stop
     if Y_button == 1 and prev_Y_button == 0:
@@ -79,10 +77,10 @@ def joy_callback(joy_msg):
         node.get_logger().info("🛑 Pure Pursuit STOPPED")
 
     # Resume
-    if Y_button == 1 and prev_Y_button == 0:
-        pursuit_pub.publish(Bool(data=False))
+    if X_button == 1 and prev_X_button == 0:
+        pursuit_pub.publish(Bool(data=True))
         play_sound(Start_sound)
-        node.get_logger().info("🛑 Pure Pursuit STOPPED")
+        node.get_logger().info("✅ Pure Pursuit Resumed")
 
     prev_Y_button = Y_button
     prev_X_button = X_button
@@ -104,10 +102,7 @@ def joy_callback(joy_msg):
         node.get_logger().info("🔄 Starting 180° turn...")
     prev_turn_button = turn_button
 
-    # Sound
-    if B_button == 1 and prev_B_button == 0:
-        play_sound(Stop_sound)
-    prev_B_button = B_button
+
 
 
 # ═══════════════════════════════════════════════════════════════

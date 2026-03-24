@@ -6,15 +6,7 @@ from ament_index_python.packages import get_package_share_directory
 import os
 
 def generate_launch_description():
-    # Path to the odrive launch file
-    odrive_launch = IncludeLaunchDescription(
-        FrontendLaunchDescriptionSource(
-            os.path.join(get_package_share_directory('odrive_can'), 
-                        'launch',
-                        'example_launch.yaml')
-        )
-    )
-    
+
     # Joy node
     joy_node = Node(
         package='joy',
@@ -32,7 +24,6 @@ def generate_launch_description():
     )
     
     return LaunchDescription([
-        odrive_launch,
         joy_node,
         rover_control
     ])
