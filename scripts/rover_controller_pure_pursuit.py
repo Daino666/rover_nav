@@ -32,11 +32,7 @@ TURN_THRESHOLD    = 0.2
 DEADZONE          = 0.08
 ACCEL_LIMIT       = 3.0
 
-path = [
-    [2.0, 0.0],
-    [4.0, 1.0],
-    [6.0, 0.0],
-]
+path = [[2.0, 0.0]]
 
 right_wheels = [0, 1, 2]
 left_wheels  = [3, 4, 5]
@@ -126,21 +122,6 @@ def publish_wheel_velocities(v_right, v_left):
     for i in left_wheels:
         pubs[i].publish(left_msg)
 
-def sort_path_by_distance(start_pos, waypoints):
-    remaining = waypoints.copy()
-    sorted_path = []
-    current = start_pos
-
-    while remaining:
-        closest = min(remaining, key=lambda p: distance(current, p))
-        sorted_path.append(closest)
-        remaining.remove(closest)
-        current = closest
-
-    # Return to start
-    sorted_path.append(list(start_pos))
-    return sorted_path
-
 # ═══════════════════════════════════════════════════════════════
 # CALLBACKS
 # ═══════════════════════════════════════════════════════════════
@@ -211,7 +192,7 @@ def pursuit_control():
         return 0.0, 0.0
 
     if distance(car_global_axis, path[-1]) < GOAL_TOLERANCE:
-        node.get_logger().info("✅ Final goal reached!", throttle_duration_sec=1.0)
+        node.get_logger().info("✅ Goal reached!", throttle_duration_sec=1.0)
         return 0.0, 0.0
 
     lookahead_point = None
@@ -243,7 +224,7 @@ def pursuit_control():
 # ═══════════════════════════════════════════════════════════════
 
 def main(args=None):
-    global pubs, node, path
+    global pubs, node
     global current_right_velocity, current_left_velocity
     global is_turning, turn_start_time, trigger
 
@@ -270,15 +251,6 @@ def main(args=None):
 
     node.create_subscription(Odometry, "/odometry/filtered", odom_callback, 10)
     node.create_subscription(Joy, "/joy", joy_callback, 10)
-
-    # Wait for first odometry
-    node.get_logger().info("Waiting for initial position...")
-    while car_global_axis is None:
-        rclpy.spin_once(node, timeout_sec=0.1)
-
-    # Sort path nearest-first then return to start
-    path = sort_path_by_distance(car_global_axis, path)
-    node.get_logger().info(f"📍 Sorted path: {path}")
 
     play_sound(Start_sound)
     node.get_logger().info("🚀 Rover controller started! (AUTONOMOUS mode)")
