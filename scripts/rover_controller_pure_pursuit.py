@@ -6,9 +6,12 @@ from rclpy.node import Node
 from odrive_can.srv import AxisState
 from odrive_can.msg import ControlMessage
 from nav_msgs.msg import Odometry
+from std_msgs.msg import Bool
 from scipy.spatial.transform import Rotation as R
 import math
 import time
+import subprocess
+
 
 # ═══════════════════════════════════════════════════════════════
 # CONFIGURATION
@@ -27,6 +30,7 @@ goal_point = [2.0, 2.0]
 
 right_wheels = [0, 1, 2]
 left_wheels  = [3, 4, 5]
+Start_sound = "/home/daino/colcon_ws/src/rover_nav/scripts/Sounds/Start.wav"
 
 # ═══════════════════════════════════════════════════════════════
 # STATE
@@ -35,9 +39,10 @@ left_wheels  = [3, 4, 5]
 car_yaw = None
 car_global_axis = None
 pubs = []
+pursuit_enabled = True
 
 # ═══════════════════════════════════════════════════════════════
-# ODOMETRY
+# CALLBACKS
 # ═══════════════════════════════════════════════════════════════
 
 def odom_callback(odom):
@@ -53,6 +58,10 @@ def odom_callback(odom):
     qw = odom.pose.pose.orientation.w
     r = R.from_quat([qx, qy, qz, qw])
     _, _, car_yaw = r.as_euler('xyz')
+
+def safety_callback(msg):
+    global pursuit_enabled
+    pursuit_enabled = msg.data
 
 # ═══════════════════════════════════════════════════════════════
 # PURE PURSUIT
@@ -72,11 +81,14 @@ def calc_curv(local_x, local_y):
     ld = math.sqrt(local_x**2 + local_y**2)
     if ld < 0.01:
         return 0.0
-    return ((2 * local_y) / (ld ** 2))
+    return (2 * local_y) / (ld ** 2)
 
 # ═══════════════════════════════════════════════════════════════
 # ODRIVE HELPERS
 # ═══════════════════════════════════════════════════════════════
+def play_sound(file_path):
+    subprocess.Popen(["aplay", file_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
 
 def mps_to_revs(mps):
     return mps / (2 * math.pi * WHEEL_RADIUS)
@@ -107,6 +119,11 @@ def publish_wheel_velocities(v_right, v_left):
 
 def control_loop(node):
     global car_yaw, car_global_axis
+
+    if not pursuit_enabled:
+        publish_wheel_velocities(0.0, 0.0)
+        node.get_logger().warn("🛑 Pursuit disabled!", throttle_duration_sec=2.0)
+        return
 
     if car_yaw is None or car_global_axis is None:
         node.get_logger().warn("Waiting for odometry...", throttle_duration_sec=2.0)
@@ -170,9 +187,12 @@ def main(args=None):
     node.get_logger().info("✅ All ODrive axes armed!")
 
     node.create_subscription(Odometry, "/odometry/filtered", odom_callback, 10)
+    node.create_subscription(Bool, "/pursuit_enabled", safety_callback, 10)
     node.create_timer(0.1, lambda: control_loop(node))
 
     node.get_logger().info("🚀 Pure Pursuit controller started!")
+    play_sound(Start_sound)
+    
     rclpy.spin(node)
     node.destroy_node()
     rclpy.shutdown()
