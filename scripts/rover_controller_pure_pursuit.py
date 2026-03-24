@@ -7,7 +7,6 @@ from odrive_can.srv import AxisState
 from odrive_can.msg import ControlMessage
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import Joy
-from std_msgs.msg import Bool
 from scipy.spatial.transform import Rotation as R
 import math
 import time
@@ -17,21 +16,28 @@ import subprocess
 # CONFIGURATION
 # ═══════════════════════════════════════════════════════════════
 
-TRACK_WIDTH   = 0.65
-BASE_VELOCITY = 0.2
-GOAL_TOLERANCE = 0.3
-MAX_WHEEL_VEL = 1.0
-WHEEL_RADIUS  = 0.111
+TRACK_WIDTH    = 0.65
+BASE_VELOCITY  = 0.2
+GOAL_TOLERANCE = 0.5
+MAX_WHEEL_VEL  = 1.0
+WHEEL_RADIUS   = 0.111
+LA             = 0.5
+MAX_CURVATURE  = 2.0
 
-MAX_VELOCITY     = 1.5
+MAX_VELOCITY      = 1.5
 TURN_VELOCITY_180 = 1.0
-TURN_DURATION    = 2.1
-TURN_BOOST       = 1.5
-TURN_THRESHOLD   = 0.2
-DEADZONE         = 0.08
-ACCEL_LIMIT      = 3.0
+TURN_DURATION     = 2.1
+TURN_BOOST        = 1.5
+TURN_THRESHOLD    = 0.2
+DEADZONE          = 0.08
+ACCEL_LIMIT       = 3.0
 
-goal_point   = [2.0, 0]
+path = [
+    [2.0, 0.0],
+    [4.0, 1.0],
+    [6.0, 0.0],
+]
+
 right_wheels = [0, 1, 2]
 left_wheels  = [3, 4, 5]
 
@@ -42,24 +48,24 @@ Start_sound = "/home/daino/colcon_ws/src/rover_nav/scripts/Sounds/Start.wav"
 # STATE
 # ═══════════════════════════════════════════════════════════════
 
-car_yaw        = None
-car_global_axis = None
-pubs           = []
-pursuit_enabled = True
+car_yaw            = None
+car_global_axis    = None
+pubs               = []
+pursuit_enabled    = True
+current_target_idx = 0
 
-# Joystick state
 target_right_velocity  = 0.0
 target_left_velocity   = 0.0
 current_right_velocity = 0.0
 current_left_velocity  = 0.0
-trigger        = 0
-turn_button    = 0
+trigger          = 0
+turn_button      = 0
 prev_turn_button = 0
-prev_Y_button  = 0
-prev_X_button  = 0
-is_turning     = False
-turn_start_time = 0.0
-node           = None
+prev_Y_button    = 0
+prev_X_button    = 0
+is_turning       = False
+turn_start_time  = 0.0
+node             = None
 
 # ═══════════════════════════════════════════════════════════════
 # HELPERS
@@ -120,6 +126,21 @@ def publish_wheel_velocities(v_right, v_left):
     for i in left_wheels:
         pubs[i].publish(left_msg)
 
+def sort_path_by_distance(start_pos, waypoints):
+    remaining = waypoints.copy()
+    sorted_path = []
+    current = start_pos
+
+    while remaining:
+        closest = min(remaining, key=lambda p: distance(current, p))
+        sorted_path.append(closest)
+        remaining.remove(closest)
+        current = closest
+
+    # Return to start
+    sorted_path.append(list(start_pos))
+    return sorted_path
+
 # ═══════════════════════════════════════════════════════════════
 # CALLBACKS
 # ═══════════════════════════════════════════════════════════════
@@ -141,31 +162,29 @@ def joy_callback(joy_msg):
     global trigger, turn_button, prev_turn_button
     global prev_Y_button, prev_X_button
     global is_turning, turn_start_time
-    global pursuit_enabled, node
+    global pursuit_enabled, current_target_idx, node
 
-    vertical   = apply_deadzone(-joy_msg.axes[3])
-    horizontal = apply_deadzone( joy_msg.axes[2])
-    Y_button   = joy_msg.buttons[4]
-    X_button   = joy_msg.buttons[3]
-    trigger    = joy_msg.buttons[7]
+    vertical    = apply_deadzone(-joy_msg.axes[3])
+    horizontal  = apply_deadzone( joy_msg.axes[2])
+    Y_button    = joy_msg.buttons[4]
+    X_button    = joy_msg.buttons[3]
+    trigger     = joy_msg.buttons[7]
     turn_button = joy_msg.buttons[6]
 
-    # Switch to joystick
     if Y_button == 1 and prev_Y_button == 0:
         pursuit_enabled = False
         play_sound(Stop_sound)
         node.get_logger().info("🛑 Switched to MANUAL control")
 
-    # Switch to pure pursuit
     if X_button == 1 and prev_X_button == 0:
         pursuit_enabled = True
+        current_target_idx = 0
         play_sound(Start_sound)
         node.get_logger().info("🚀 Switched to AUTONOMOUS control")
 
     prev_Y_button = Y_button
     prev_X_button = X_button
 
-    # Drive mode
     if abs(vertical) < TURN_THRESHOLD and abs(horizontal) > 0.1:
         turn_vel = horizontal * MAX_VELOCITY * TURN_BOOST
         target_right_velocity = turn_vel
@@ -174,7 +193,6 @@ def joy_callback(joy_msg):
         target_right_velocity = -(vertical - horizontal) * MAX_VELOCITY
         target_left_velocity  =  (vertical + horizontal) * MAX_VELOCITY
 
-    # 180° turn
     if turn_button == 1 and prev_turn_button == 0 and not is_turning:
         is_turning = True
         turn_start_time = time.time()
@@ -182,28 +200,39 @@ def joy_callback(joy_msg):
     prev_turn_button = turn_button
 
 # ═══════════════════════════════════════════════════════════════
-# PURE PURSUIT LOOP
+# PURE PURSUIT
 # ═══════════════════════════════════════════════════════════════
 
 def pursuit_control():
+    global current_target_idx
+
     if car_yaw is None or car_global_axis is None:
         node.get_logger().warn("Waiting for odometry...", throttle_duration_sec=2.0)
         return 0.0, 0.0
 
-    if distance(car_global_axis, goal_point) < GOAL_TOLERANCE:
-        node.get_logger().info("✅ Goal reached!", throttle_duration_sec=1.0)
+    if distance(car_global_axis, path[-1]) < GOAL_TOLERANCE:
+        node.get_logger().info("✅ Final goal reached!", throttle_duration_sec=1.0)
         return 0.0, 0.0
 
-    local_x, local_y = point_global_to_local(goal_point, car_yaw, car_global_axis)
-    curvature = calc_curv(local_x, local_y)
+    lookahead_point = None
+    for i in range(current_target_idx, len(path)):
+        if distance(car_global_axis, path[i]) >= LA:
+            lookahead_point = path[i]
+            current_target_idx = i
+            break
+
+    if lookahead_point is None:
+        lookahead_point = path[-1]
+
+    local_x, local_y = point_global_to_local(lookahead_point, car_yaw, car_global_axis)
+    curvature = float(np.clip(calc_curv(local_x, local_y), -MAX_CURVATURE, MAX_CURVATURE))
 
     angular     = curvature * BASE_VELOCITY
     v_right_mps = BASE_VELOCITY + angular * (TRACK_WIDTH / 2)
     v_left_mps  = BASE_VELOCITY - angular * (TRACK_WIDTH / 2)
 
     node.get_logger().info(
-        f"pos: {car_global_axis} | local: ({local_x:.2f}, {local_y:.2f}) | "
-        f"curv: {curvature:.3f}",
+        f"pos: {car_global_axis} | target: {lookahead_point} | curv: {curvature:.3f}",
         throttle_duration_sec=0.5
     )
 
@@ -214,7 +243,7 @@ def pursuit_control():
 # ═══════════════════════════════════════════════════════════════
 
 def main(args=None):
-    global pubs, node
+    global pubs, node, path
     global current_right_velocity, current_left_velocity
     global is_turning, turn_start_time, trigger
 
@@ -242,6 +271,15 @@ def main(args=None):
     node.create_subscription(Odometry, "/odometry/filtered", odom_callback, 10)
     node.create_subscription(Joy, "/joy", joy_callback, 10)
 
+    # Wait for first odometry
+    node.get_logger().info("Waiting for initial position...")
+    while car_global_axis is None:
+        rclpy.spin_once(node, timeout_sec=0.1)
+
+    # Sort path nearest-first then return to start
+    path = sort_path_by_distance(car_global_axis, path)
+    node.get_logger().info(f"📍 Sorted path: {path}")
+
     play_sound(Start_sound)
     node.get_logger().info("🚀 Rover controller started! (AUTONOMOUS mode)")
 
@@ -256,9 +294,7 @@ def main(args=None):
             if pursuit_enabled:
                 v_right, v_left = pursuit_control()
                 publish_wheel_velocities(v_right, v_left)
-
             else:
-                # Joystick mode
                 if is_turning:
                     elapsed = time.time() - turn_start_time
                     if elapsed < TURN_DURATION:
