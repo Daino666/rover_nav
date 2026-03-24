@@ -6,66 +6,83 @@ from rclpy.node import Node
 from odrive_can.srv import AxisState
 from odrive_can.msg import ControlMessage
 from nav_msgs.msg import Odometry
+from sensor_msgs.msg import Joy
 from std_msgs.msg import Bool
 from scipy.spatial.transform import Rotation as R
 import math
 import time
 import subprocess
 
-
 # ═══════════════════════════════════════════════════════════════
 # CONFIGURATION
 # ═══════════════════════════════════════════════════════════════
 
-LA = 0.5
-WHEEL_BASE = 0.566
-TRACK_WIDTH = 0.65
-
+TRACK_WIDTH   = 0.65
 BASE_VELOCITY = 0.2
 GOAL_TOLERANCE = 0.3
 MAX_WHEEL_VEL = 1.0
-WHEEL_RADIUS = 0.111
+WHEEL_RADIUS  = 0.111
 
-goal_point = [2.0, 0]
+MAX_VELOCITY     = 1.5
+TURN_VELOCITY_180 = 1.0
+TURN_DURATION    = 2.1
+TURN_BOOST       = 1.5
+TURN_THRESHOLD   = 0.2
+DEADZONE         = 0.08
+ACCEL_LIMIT      = 3.0
 
+goal_point   = [2.0, 0]
 right_wheels = [0, 1, 2]
 left_wheels  = [3, 4, 5]
+
+Stop_sound  = "/home/daino/colcon_ws/src/rover_nav/scripts/Sounds/Stop.wav"
 Start_sound = "/home/daino/colcon_ws/src/rover_nav/scripts/Sounds/Start.wav"
 
 # ═══════════════════════════════════════════════════════════════
 # STATE
 # ═══════════════════════════════════════════════════════════════
 
-car_yaw = None
+car_yaw        = None
 car_global_axis = None
-pubs = []
+pubs           = []
 pursuit_enabled = True
 
-# ═══════════════════════════════════════════════════════════════
-# CALLBACKS
-# ═══════════════════════════════════════════════════════════════
-
-def odom_callback(odom):
-    global car_yaw, car_global_axis
-
-    x = odom.pose.pose.position.x
-    y = odom.pose.pose.position.y
-    car_global_axis = [x, y]
-
-    qx = odom.pose.pose.orientation.x
-    qy = odom.pose.pose.orientation.y
-    qz = odom.pose.pose.orientation.z
-    qw = odom.pose.pose.orientation.w
-    r = R.from_quat([qx, qy, qz, qw])
-    _, _, car_yaw = r.as_euler('xyz')
-
-def safety_callback(msg):
-    global pursuit_enabled
-    pursuit_enabled = msg.data
+# Joystick state
+target_right_velocity  = 0.0
+target_left_velocity   = 0.0
+current_right_velocity = 0.0
+current_left_velocity  = 0.0
+trigger        = 0
+turn_button    = 0
+prev_turn_button = 0
+prev_Y_button  = 0
+prev_X_button  = 0
+is_turning     = False
+turn_start_time = 0.0
+node           = None
 
 # ═══════════════════════════════════════════════════════════════
-# PURE PURSUIT
+# HELPERS
 # ═══════════════════════════════════════════════════════════════
+
+def play_sound(file_path):
+    subprocess.Popen(["aplay", file_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+def apply_deadzone(value, threshold=DEADZONE):
+    if abs(value) < threshold:
+        return 0.0
+    sign = 1.0 if value > 0 else -1.0
+    return sign * (abs(value) - threshold) / (1.0 - threshold)
+
+def ramp_velocity(current, target, dt):
+    max_change = ACCEL_LIMIT * dt
+    diff = target - current
+    if abs(diff) < max_change:
+        return target
+    return current + (max_change if diff > 0 else -max_change)
+
+def mps_to_revs(mps):
+    return mps / (2 * math.pi * WHEEL_RADIUS)
 
 def distance(p1, p2):
     return math.sqrt((p1[0] - p2[0])**2 + (p1[1] - p2[1])**2)
@@ -83,29 +100,19 @@ def calc_curv(local_x, local_y):
         return 0.0
     return (2 * local_y) / (ld ** 2)
 
-# ═══════════════════════════════════════════════════════════════
-# ODRIVE HELPERS
-# ═══════════════════════════════════════════════════════════════
-def play_sound(file_path):
-    subprocess.Popen(["aplay", file_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-
-def mps_to_revs(mps):
-    return mps / (2 * math.pi * WHEEL_RADIUS)
-
 def publish_wheel_velocities(v_right, v_left):
     right_msg = ControlMessage()
     right_msg.control_mode = 2
-    right_msg.input_mode = 1
-    right_msg.input_vel = float(np.clip(v_right, -MAX_WHEEL_VEL, MAX_WHEEL_VEL))
-    right_msg.input_pos = 0.0
+    right_msg.input_mode   = 1
+    right_msg.input_vel    = float(np.clip(v_right, -MAX_WHEEL_VEL, MAX_WHEEL_VEL))
+    right_msg.input_pos    = 0.0
     right_msg.input_torque = 0.0
 
     left_msg = ControlMessage()
     left_msg.control_mode = 2
-    left_msg.input_mode = 1
-    left_msg.input_vel = float(np.clip(-v_left, -MAX_WHEEL_VEL, MAX_WHEEL_VEL))
-    left_msg.input_pos = 0.0
+    left_msg.input_mode   = 1
+    left_msg.input_vel    = float(np.clip(-v_left, -MAX_WHEEL_VEL, MAX_WHEEL_VEL))
+    left_msg.input_pos    = 0.0
     left_msg.input_torque = 0.0
 
     for i in right_wheels:
@@ -114,55 +121,105 @@ def publish_wheel_velocities(v_right, v_left):
         pubs[i].publish(left_msg)
 
 # ═══════════════════════════════════════════════════════════════
-# CONTROL LOOP
+# CALLBACKS
 # ═══════════════════════════════════════════════════════════════
 
-def control_loop(node):
+def odom_callback(odom):
     global car_yaw, car_global_axis
+    x = odom.pose.pose.position.x
+    y = odom.pose.pose.position.y
+    car_global_axis = [x, y]
+    qx = odom.pose.pose.orientation.x
+    qy = odom.pose.pose.orientation.y
+    qz = odom.pose.pose.orientation.z
+    qw = odom.pose.pose.orientation.w
+    r = R.from_quat([qx, qy, qz, qw])
+    _, _, car_yaw = r.as_euler('xyz')
 
-    if not pursuit_enabled:
-        publish_wheel_velocities(0.0, 0.0)
-        node.get_logger().warn("🛑 Pursuit disabled!", throttle_duration_sec=2.0)
-        return
+def joy_callback(joy_msg):
+    global target_right_velocity, target_left_velocity
+    global trigger, turn_button, prev_turn_button
+    global prev_Y_button, prev_X_button
+    global is_turning, turn_start_time
+    global pursuit_enabled, node
 
+    vertical   = apply_deadzone(-joy_msg.axes[3])
+    horizontal = apply_deadzone( joy_msg.axes[2])
+    Y_button   = joy_msg.buttons[4]
+    X_button   = joy_msg.buttons[3]
+    trigger    = joy_msg.buttons[7]
+    turn_button = joy_msg.buttons[6]
+
+    # Switch to joystick
+    if Y_button == 1 and prev_Y_button == 0:
+        pursuit_enabled = False
+        play_sound(Stop_sound)
+        node.get_logger().info("🛑 Switched to MANUAL control")
+
+    # Switch to pure pursuit
+    if X_button == 1 and prev_X_button == 0:
+        pursuit_enabled = True
+        play_sound(Start_sound)
+        node.get_logger().info("🚀 Switched to AUTONOMOUS control")
+
+    prev_Y_button = Y_button
+    prev_X_button = X_button
+
+    # Drive mode
+    if abs(vertical) < TURN_THRESHOLD and abs(horizontal) > 0.1:
+        turn_vel = horizontal * MAX_VELOCITY * TURN_BOOST
+        target_right_velocity = turn_vel
+        target_left_velocity  = turn_vel
+    else:
+        target_right_velocity = -(vertical - horizontal) * MAX_VELOCITY
+        target_left_velocity  =  (vertical + horizontal) * MAX_VELOCITY
+
+    # 180° turn
+    if turn_button == 1 and prev_turn_button == 0 and not is_turning:
+        is_turning = True
+        turn_start_time = time.time()
+        node.get_logger().info("🔄 Starting 180° turn...")
+    prev_turn_button = turn_button
+
+# ═══════════════════════════════════════════════════════════════
+# PURE PURSUIT LOOP
+# ═══════════════════════════════════════════════════════════════
+
+def pursuit_control():
     if car_yaw is None or car_global_axis is None:
         node.get_logger().warn("Waiting for odometry...", throttle_duration_sec=2.0)
-        return
+        return 0.0, 0.0
 
     if distance(car_global_axis, goal_point) < GOAL_TOLERANCE:
-        publish_wheel_velocities(0.0, 0.0)
         node.get_logger().info("✅ Goal reached!", throttle_duration_sec=1.0)
-        return
+        return 0.0, 0.0
 
     local_x, local_y = point_global_to_local(goal_point, car_yaw, car_global_axis)
-
-
     curvature = calc_curv(local_x, local_y)
 
-    angular = curvature * BASE_VELOCITY
-    v_right_mps = BASE_VELOCITY + angular * (WHEEL_BASE / 2)
-    v_left_mps  = BASE_VELOCITY - angular * (WHEEL_BASE / 2)
-
-    v_right = mps_to_revs(v_right_mps)
-    v_left  = mps_to_revs(v_left_mps)
-
-    publish_wheel_velocities(v_right, v_left)
+    angular     = curvature * BASE_VELOCITY
+    v_right_mps = BASE_VELOCITY + angular * (TRACK_WIDTH / 2)
+    v_left_mps  = BASE_VELOCITY - angular * (TRACK_WIDTH / 2)
 
     node.get_logger().info(
         f"pos: {car_global_axis} | local: ({local_x:.2f}, {local_y:.2f}) | "
-        f"curv: {curvature:.3f} | R: {v_right:.2f} | L: {v_left:.2f}",
+        f"curv: {curvature:.3f}",
         throttle_duration_sec=0.5
     )
+
+    return mps_to_revs(v_right_mps), mps_to_revs(v_left_mps)
 
 # ═══════════════════════════════════════════════════════════════
 # MAIN
 # ═══════════════════════════════════════════════════════════════
 
 def main(args=None):
-    global pubs
+    global pubs, node
+    global current_right_velocity, current_left_velocity
+    global is_turning, turn_start_time, trigger
 
     rclpy.init(args=args)
-    node = Node("pure_pursuit_odrive")
+    node = Node("rover_controller")
 
     clients = []
     for i in range(6):
@@ -183,13 +240,51 @@ def main(args=None):
     node.get_logger().info("✅ All ODrive axes armed!")
 
     node.create_subscription(Odometry, "/odometry/filtered", odom_callback, 10)
-    node.create_subscription(Bool, "/pursuit_enabled", safety_callback, 10)
-    node.create_timer(0.1, lambda: control_loop(node))
+    node.create_subscription(Joy, "/joy", joy_callback, 10)
 
-    node.get_logger().info("🚀 Pure Pursuit controller started!")
     play_sound(Start_sound)
-    
-    rclpy.spin(node)
+    node.get_logger().info("🚀 Rover controller started! (AUTONOMOUS mode)")
+
+    publish_period = 1.0 / 20.0
+
+    try:
+        while rclpy.ok():
+            rclpy.spin_once(node, timeout_sec=0.01)
+
+            dt = publish_period
+
+            if pursuit_enabled:
+                v_right, v_left = pursuit_control()
+                publish_wheel_velocities(v_right, v_left)
+
+            else:
+                # Joystick mode
+                if is_turning:
+                    elapsed = time.time() - turn_start_time
+                    if elapsed < TURN_DURATION:
+                        target_vel_right = TURN_VELOCITY_180
+                        target_vel_left  = TURN_VELOCITY_180
+                    else:
+                        is_turning = False
+                        target_vel_right = 0.0
+                        target_vel_left  = 0.0
+                        node.get_logger().info("✅ 180° turn complete!")
+                elif trigger == 1:
+                    target_vel_right = target_right_velocity
+                    target_vel_left  = target_left_velocity
+                else:
+                    target_vel_right = 0.0
+                    target_vel_left  = 0.0
+
+                current_right_velocity = ramp_velocity(current_right_velocity, target_vel_right, dt)
+                current_left_velocity  = ramp_velocity(current_left_velocity,  target_vel_left,  dt)
+                publish_wheel_velocities(current_right_velocity, current_left_velocity)
+
+            time.sleep(publish_period)
+
+    except KeyboardInterrupt:
+        node.get_logger().info("Shutting down...")
+
     node.destroy_node()
     rclpy.shutdown()
 
