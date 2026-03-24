@@ -8,8 +8,8 @@ from tf_transformations import quaternion_from_euler
 import math
 
 # Constants
-WHEEL_CIRCUMFERENCE = 0.695  # meters
-WHEELBASE = 0.665  # meters
+WHEEL_CIRCUMFERENCE = 0.697  # meters
+WHEELBASE = 0.566  # meters
 PUBLISH_RATE = 20  # Hz
 
 class OdometryNode(Node):

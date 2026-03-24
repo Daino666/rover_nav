@@ -35,4 +35,7 @@ ros2 run robot_localization ekf_node --ros-args --params-file ~/colcon_ws/src/ro
 
 ros2 run tf2_ros static_transform_publisher 0 0 0 0 0 0 base_link bno055
 
+
+colcon build --packages-skip cmrosutils carmaker_rsds_client hellocm hellocm_cmnode hellocm_msgs
+
 	

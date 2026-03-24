@@ -8,7 +8,9 @@ import os
 def generate_launch_description():
     # Get the path to the config file
     pkg_share = get_package_share_directory('rover_nav')
-    ekf_config = os.path.join(pkg_share, 'config', '/home/daino/colcon_ws/src/rover_nav/config/ekf_config.yaml')
+    #ekf_config = os.path.join(pkg_share, 'config', '/home/daino/colcon_ws/src/rover_nav/config/ekf_config.yaml')
+    #change needed to 
+    ekf_config = os.path.join(pkg_share, 'config', 'ekf_config.yaml')
     
     return LaunchDescription([
         # Encoder odometry node
@@ -42,11 +44,11 @@ def generate_launch_description():
         ),
         
         # EKF node (publishes odom → base_link with fused IMU yaw)
-        Node(
-            package='robot_localization',
-            executable='ekf_node',
+     Node(
+           package='robot_localization',
+           executable='ekf_node',
             name='ekf_filter_node',
             output='screen',
-            parameters=[ekf_config]
-        ),
+           parameters=[ekf_config]
+       ),
     ])
