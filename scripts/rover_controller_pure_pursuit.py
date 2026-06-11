@@ -3,10 +3,9 @@
 import rclpy
 import numpy as np
 from rclpy.node import Node
-from odrive_can.srv import AxisState
-from odrive_can.msg import ControlMessage
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import Joy
+from geometry_msgs.msg import TwistStamped
 from scipy.spatial.transform import Rotation as R
 import math
 import time
@@ -16,26 +15,21 @@ import subprocess
 # CONFIGURATION
 # ═══════════════════════════════════════════════════════════════
 
-TRACK_WIDTH    = 0.65
-BASE_VELOCITY  = 0.2
-GOAL_TOLERANCE = 0.3
-MAX_WHEEL_VEL  = 1.0
-WHEEL_RADIUS   = 0.111
-LA             = 0.5
-MAX_CURVATURE  = 2.0
+BASE_VELOCITY  = 0.2          # m/s   forward speed in autonomous mode
+GOAL_TOLERANCE = 0.3          # m     how close counts as "reached" a waypoint
+STOP_DURATION  = 1.0          # s     pause at each waypoint before moving on
+MAX_CURVATURE  = 2.0          # 1/m
 
-MAX_VELOCITY      = 1.5
-TURN_VELOCITY_180 = 1.0
-TURN_DURATION     = 2.1
-TURN_BOOST        = 1.5
-TURN_THRESHOLD    = 0.2
-DEADZONE          = 0.08
-ACCEL_LIMIT       = 3.0
+MAX_LINEAR     = 1.0          # m/s   manual full-stick forward speed
+MAX_ANGULAR    = 2.0          # rad/s manual full-stick turn rate
+TURN_DURATION  = 2.1          # s     duration of the timed 180° turn
+TURN_RATE_180  = math.pi / TURN_DURATION   # rad/s to sweep ~180° in TURN_DURATION
+TURN_THRESHOLD = 0.2
+DEADZONE       = 0.08
 
-path = [[1.0, 0.0], [2.0, 1.0 ]]
+CMD_VEL_TOPIC  = "rover_controller/cmd_vel"   # ros2_control diff_drive_controller (TwistStamped)
 
-right_wheels = [0, 1, 2]
-left_wheels  = [3, 4, 5]
+path = [[3.0, 0.0], [5.0, 1.425]]
 
 Stop_sound  = "/home/daino/colcon_ws/src/rover_nav/scripts/Sounds/Stop.wav"
 Start_sound = "/home/daino/colcon_ws/src/rover_nav/scripts/Sounds/Start.wav"
@@ -46,14 +40,13 @@ Start_sound = "/home/daino/colcon_ws/src/rover_nav/scripts/Sounds/Start.wav"
 
 car_yaw            = None
 car_global_axis    = None
-pubs               = []
+cmd_vel_pub        = None
 pursuit_enabled    = True
 current_target_idx = 0
+waypoint_pause_until = 0.0
 
-target_right_velocity  = 0.0
-target_left_velocity   = 0.0
-current_right_velocity = 0.0
-current_left_velocity  = 0.0
+target_linear    = 0.0
+target_angular   = 0.0
 trigger          = 0
 turn_button      = 0
 prev_turn_button = 0
@@ -76,16 +69,6 @@ def apply_deadzone(value, threshold=DEADZONE):
     sign = 1.0 if value > 0 else -1.0
     return sign * (abs(value) - threshold) / (1.0 - threshold)
 
-def ramp_velocity(current, target, dt):
-    max_change = ACCEL_LIMIT * dt
-    diff = target - current
-    if abs(diff) < max_change:
-        return target
-    return current + (max_change if diff > 0 else -max_change)
-
-def mps_to_revs(mps):
-    return mps / (2 * math.pi * WHEEL_RADIUS)
-
 def distance(p1, p2):
     return math.sqrt((p1[0] - p2[0])**2 + (p1[1] - p2[1])**2)
 
@@ -102,25 +85,15 @@ def calc_curv(local_x, local_y):
         return 0.0
     return (2 * local_y) / (ld ** 2)
 
-def publish_wheel_velocities(v_right, v_left):
-    right_msg = ControlMessage()
-    right_msg.control_mode = 2
-    right_msg.input_mode   = 1
-    right_msg.input_vel    = float(np.clip(v_right, -MAX_WHEEL_VEL, MAX_WHEEL_VEL))
-    right_msg.input_pos    = 0.0
-    right_msg.input_torque = 0.0
-
-    left_msg = ControlMessage()
-    left_msg.control_mode = 2
-    left_msg.input_mode   = 1
-    left_msg.input_vel    = float(np.clip(-v_left, -MAX_WHEEL_VEL, MAX_WHEEL_VEL))
-    left_msg.input_pos    = 0.0
-    left_msg.input_torque = 0.0
-
-    for i in right_wheels:
-        pubs[i].publish(right_msg)
-    for i in left_wheels:
-        pubs[i].publish(left_msg)
+def publish_cmd_vel(linear, angular):
+    if cmd_vel_pub is None:
+        return
+    msg = TwistStamped()
+    msg.header.stamp = node.get_clock().now().to_msg()
+    msg.header.frame_id = "base_link"
+    msg.twist.linear.x  = float(linear)
+    msg.twist.angular.z = float(angular)
+    cmd_vel_pub.publish(msg)
 
 # ═══════════════════════════════════════════════════════════════
 # CALLBACKS
@@ -139,14 +112,14 @@ def odom_callback(odom):
     _, _, car_yaw = r.as_euler('xyz')
 
 def joy_callback(joy_msg):
-    global target_right_velocity, target_left_velocity
+    global target_linear, target_angular
     global trigger, turn_button, prev_turn_button
     global prev_Y_button, prev_X_button
     global is_turning, turn_start_time
     global pursuit_enabled, current_target_idx, node
 
-    vertical    = apply_deadzone(-joy_msg.axes[3])
-    horizontal  = apply_deadzone( joy_msg.axes[2])
+    vertical    = apply_deadzone(-joy_msg.axes[3])   # forward / back
+    horizontal  = apply_deadzone( joy_msg.axes[2])   # turn left / right
     Y_button    = joy_msg.buttons[4]
     X_button    = joy_msg.buttons[3]
     trigger     = joy_msg.buttons[7]
@@ -166,13 +139,11 @@ def joy_callback(joy_msg):
     prev_Y_button = Y_button
     prev_X_button = X_button
 
-    if abs(vertical) < TURN_THRESHOLD and abs(horizontal) > 0.1:
-        turn_vel = horizontal * MAX_VELOCITY * TURN_BOOST
-        target_right_velocity = turn_vel
-        target_left_velocity  = turn_vel
-    else:
-        target_right_velocity = -(vertical - horizontal) * MAX_VELOCITY
-        target_left_velocity  =  (vertical + horizontal) * MAX_VELOCITY
+    # Map joystick to a robot-frame velocity command.
+    # linear.x > 0 = forward, angular.z > 0 = turn left (CCW). Flip the
+    # horizontal sign here if the rover turns the wrong way.
+    target_linear  = vertical   * MAX_LINEAR
+    target_angular = horizontal * MAX_ANGULAR
 
     if turn_button == 1 and prev_turn_button == 0 and not is_turning:
         is_turning = True
@@ -185,78 +156,61 @@ def joy_callback(joy_msg):
 # ═══════════════════════════════════════════════════════════════
 
 def pursuit_control():
-    global current_target_idx
+    global current_target_idx, waypoint_pause_until
 
     if car_yaw is None or car_global_axis is None:
         node.get_logger().warn("Waiting for odometry...", throttle_duration_sec=2.0)
-        return 0.0, 0.0
+        publish_cmd_vel(0.0, 0.0)
+        return
 
-    if distance(car_global_axis, path[-1]) < GOAL_TOLERANCE:
-        node.get_logger().info("✅ Goal reached!", throttle_duration_sec=1.0)
-        return 0.0, 0.0
+    # Finished the whole path
+    if current_target_idx >= len(path):
+        node.get_logger().info("✅ All waypoints reached!", throttle_duration_sec=1.0)
+        publish_cmd_vel(0.0, 0.0)
+        return
 
-    lookahead_point = None
-    for i in range(current_target_idx, len(path)):
-        if distance(car_global_axis, path[i]) >= LA:
-            lookahead_point = path[i]
-            current_target_idx = i
-            break
+    # Pausing at a waypoint we just reached
+    now = time.time()
+    if now < waypoint_pause_until:
+        publish_cmd_vel(0.0, 0.0)
+        return
 
-    if lookahead_point is None:
-        # No point at lookahead distance: aim at the closest remaining point
-        closest_idx = current_target_idx
-        closest_dist = float('inf')
-        for i in range(current_target_idx, len(path)):
-            d = distance(car_global_axis, path[i])
-            if d < closest_dist:
-                closest_dist = d
-                closest_idx = i
-        lookahead_point = path[closest_idx]
-        current_target_idx = closest_idx
+    # Drive toward the CURRENT waypoint (one at a time, in order)
+    target = path[current_target_idx]
+    dist   = distance(car_global_axis, target)
 
-    local_x, local_y = point_global_to_local(lookahead_point, car_yaw, car_global_axis)
+    if dist < GOAL_TOLERANCE:
+        # Reached this waypoint: stop, pause, then advance to the next one
+        publish_cmd_vel(0.0, 0.0)
+        node.get_logger().info(f"🛑 Reached waypoint {current_target_idx}: {target}")
+        waypoint_pause_until = now + STOP_DURATION
+        current_target_idx += 1
+        return
+
+    local_x, local_y = point_global_to_local(target, car_yaw, car_global_axis)
     curvature = float(np.clip(calc_curv(local_x, local_y), -MAX_CURVATURE, MAX_CURVATURE))
+    angular   = curvature * BASE_VELOCITY
 
-    angular     = curvature * BASE_VELOCITY
-    v_right_mps = BASE_VELOCITY + angular * (TRACK_WIDTH / 2)
-    v_left_mps  = BASE_VELOCITY - angular * (TRACK_WIDTH / 2)
+    publish_cmd_vel(BASE_VELOCITY, angular)
 
     node.get_logger().info(
-        f"pos: {car_global_axis} | target: {lookahead_point} | curv: {curvature:.3f}",
+        f"pos: {car_global_axis} | target[{current_target_idx}]: {target} | "
+        f"dist: {dist:.2f} | curv: {curvature:.3f}",
         throttle_duration_sec=0.5
     )
-
-    return mps_to_revs(v_right_mps), mps_to_revs(v_left_mps)
 
 # ═══════════════════════════════════════════════════════════════
 # MAIN
 # ═══════════════════════════════════════════════════════════════
 
 def main(args=None):
-    global pubs, node
-    global current_right_velocity, current_left_velocity
+    global node, cmd_vel_pub
     global is_turning, turn_start_time, trigger
 
     rclpy.init(args=args)
     node = Node("rover_controller")
 
-    clients = []
-    for i in range(6):
-        clients.append(node.create_client(AxisState, f"/odrive_axis{i}/request_axis_state"))
-        pubs.append(node.create_publisher(ControlMessage, f"/odrive_axis{i}/control_message", 10))
-
-    for i, client in enumerate(clients):
-        while not client.wait_for_service(timeout_sec=1.0):
-            node.get_logger().info(f"Waiting for odrive_axis{i}...")
-
-    for i, client in enumerate(clients):
-        req = AxisState.Request()
-        req.axis_requested_state = 8
-        future = client.call_async(req)
-        rclpy.spin_until_future_complete(node, future)
-        time.sleep(0.1)
-
-    node.get_logger().info("✅ All ODrive axes armed!")
+    cmd_vel_pub = node.create_publisher(TwistStamped, CMD_VEL_TOPIC, 10)
 
     node.create_subscription(Odometry, "/odometry/filtered", odom_callback, 10)
     node.create_subscription(Joy, "/joy", joy_callback, 10)
@@ -270,32 +224,27 @@ def main(args=None):
         while rclpy.ok():
             rclpy.spin_once(node, timeout_sec=0.01)
 
-            dt = publish_period
-
             if pursuit_enabled:
-                v_right, v_left = pursuit_control()
-                publish_wheel_velocities(v_right, v_left)
+                pursuit_control()
             else:
                 if is_turning:
                     elapsed = time.time() - turn_start_time
                     if elapsed < TURN_DURATION:
-                        target_vel_right = TURN_VELOCITY_180
-                        target_vel_left  = TURN_VELOCITY_180
+                        linear  = 0.0
+                        angular = TURN_RATE_180
                     else:
                         is_turning = False
-                        target_vel_right = 0.0
-                        target_vel_left  = 0.0
+                        linear  = 0.0
+                        angular = 0.0
                         node.get_logger().info("✅ 180° turn complete!")
                 elif trigger == 1:
-                    target_vel_right = target_right_velocity
-                    target_vel_left  = target_left_velocity
+                    linear  = target_linear
+                    angular = target_angular
                 else:
-                    target_vel_right = 0.0
-                    target_vel_left  = 0.0
+                    linear  = 0.0
+                    angular = 0.0
 
-                current_right_velocity = ramp_velocity(current_right_velocity, target_vel_right, dt)
-                current_left_velocity  = ramp_velocity(current_left_velocity,  target_vel_left,  dt)
-                publish_wheel_velocities(current_right_velocity, current_left_velocity)
+                publish_cmd_vel(linear, angular)
 
             time.sleep(publish_period)
 
