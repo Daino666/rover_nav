@@ -8,12 +8,12 @@ import time
 import subprocess
 
 # Configuration
-MAX_VELOCITY = 1.5           # rev/s - increased from default
-TURN_VELOCITY_180 = 1.0      # rev/s for 180° turn
+MAX_VELOCITY = 0.35          # rev/s
+TURN_VELOCITY_180 = 0.7      # rev/s for 180° turn
 TURN_DURATION = 2.1          # seconds for 180° turn
-TURN_BOOST = 1.5              # Multiplier for joystick turns
+TURN_BOOST = 1.2             # Multiplier for joystick turns
 TURN_THRESHOLD = 0.2         # Below this = spin in place
-DEADZONE = 0.08              # Ignore small joystick drift
+DEADZONE = 0.10              # Ignore small joystick drift
 
 # Sound
 B_SOUND_FILE = "/home/daino/colcon_ws/src/rover_nav/scripts/Sounds/Merry_Chirstmas.wav"
@@ -30,7 +30,7 @@ turn_start_time = 0.0
 node = None
 current_right_velocity = 0.0
 current_left_velocity = 0.0
-ACCEL_LIMIT = 3.0  # rev/s² - adjust this for ramp speed
+ACCEL_LIMIT = 1.5  # rev/s²
 
 def apply_deadzone(value, threshold=DEADZONE):
     """Remove joystick drift"""

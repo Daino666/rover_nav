@@ -18,7 +18,7 @@ import subprocess
 
 TRACK_WIDTH    = 0.65
 BASE_VELOCITY  = 0.2
-GOAL_TOLERANCE = 0.5
+GOAL_TOLERANCE = 0.3
 MAX_WHEEL_VEL  = 1.0
 WHEEL_RADIUS   = 0.111
 LA             = 0.5
@@ -32,7 +32,7 @@ TURN_THRESHOLD    = 0.2
 DEADZONE          = 0.08
 ACCEL_LIMIT       = 3.0
 
-path = [[2.0, 0.0]]
+path = [[1.0, 0.0], [2.0, 1.0 ]]
 
 right_wheels = [0, 1, 2]
 left_wheels  = [3, 4, 5]
@@ -203,7 +203,16 @@ def pursuit_control():
             break
 
     if lookahead_point is None:
-        lookahead_point = path[-1]
+        # No point at lookahead distance: aim at the closest remaining point
+        closest_idx = current_target_idx
+        closest_dist = float('inf')
+        for i in range(current_target_idx, len(path)):
+            d = distance(car_global_axis, path[i])
+            if d < closest_dist:
+                closest_dist = d
+                closest_idx = i
+        lookahead_point = path[closest_idx]
+        current_target_idx = closest_idx
 
     local_x, local_y = point_global_to_local(lookahead_point, car_yaw, car_global_axis)
     curvature = float(np.clip(calc_curv(local_x, local_y), -MAX_CURVATURE, MAX_CURVATURE))

@@ -18,6 +18,8 @@ install(
     scripts/LeapOne_test_encoders.py
     scripts/Odom.py
     scripts/rover_controller_pure_pursuit.py
+    scripts/Rover_path_controller/Pure_pursuit_Gazebo.py
+    scripts/Rover_path_controller/pcl_obstacle_detector.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

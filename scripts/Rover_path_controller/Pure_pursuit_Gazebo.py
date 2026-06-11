@@ -1,232 +1,193 @@
 #!/usr/bin/env python3
-import rclpy
+import math
 import numpy as np
+import rclpy
+from rclpy.node import Node
 from scipy.spatial.transform import Rotation as R
 from nav_msgs.msg import Odometry
-from geometry_msgs.msg import Twist
-import math
-from utils import distance, transform_to_local, yaw_from_quaternion
-from rover_nav.msg import Obstacle, ObstacleArray
+from geometry_msgs.msg import TwistStamped, PointStamped
+from visualization_msgs.msg import Marker, MarkerArray
+from tf2_ros import Buffer, TransformListener
+import tf2_geometry_msgs  # noqa: F401  (registers PointStamped transform support)
 
 
 # ═══════════════════════════════════════════════════════════════
-# GLOBAL VARIABLES
+# PARAMETERS
 # ═══════════════════════════════════════════════════════════════
 
-# Rover state (from odom)
-car_yaw = None
-car_global_axis = None
+BASE_VELOCITY  = 1.0   # normal cruising speed (m/s)
+AVOID_VELOCITY = 0.5   # speed while dodging an obstacle (m/s)
+MAX_CURVATURE  = 2.0
 
-# Goal
-goal_point = [7, 11]
+AVOID_RANGE    = 2.0   # only react to obstacles within this distance ahead (m)
+PATH_WIDTH     = 0.5   # obstacle must be within this lateral band to count as blocking (m)
+AVOID_OFFSET   = 0.8   # lateral shift of the avoidance waypoint (m)
 
-# Obstacles (updated by obstacle callback)
-current_obstacles = []
-
-# Publishers
-vel_pub = None
-
-# ═══════════════════════════════════════════════════════════════
-# PARAMETERS (TUNE THESE)
-# ═══════════════════════════════════════════════════════════════
-
-LA = 1.0                    # Lookahead distance
-WHEEL_BASE = 0.6            # Wheel base
-
-DETECTION_RANGE = 2.0       # How far ahead to look for obstacles (m)
-DETECTION_ANGLE = 45.0      # Cone half-angle (degrees)
-SAFETY_MARGIN = 0.3         # Buffer around obstacles (m)
-SHIFT_ANGLE = 30.0          # How much to shift target (degrees)
-
-BASE_VELOCITY = 0.5         # Normal speed (m/s)
-AVOIDANCE_VELOCITY = 0.25   # Speed while avoiding (m/s)
-GOAL_TOLERANCE = 0.3        # Stop when this close to goal (m)
+goal_point = [7.0, 11.0]
 
 
 # ═══════════════════════════════════════════════════════════════
-# CALLBACKS
-# ═══════════════════════════════════════════════════════════════
-
-def odom_callback(odom):
-    """Update rover position and heading from odometry."""
-    global car_yaw
-    global car_global_axis
-
-    qx = odom.pose.pose.orientation.x
-    qy = odom.pose.pose.orientation.y
-    qz = odom.pose.pose.orientation.z
-    qw = odom.pose.pose.orientation.w
-
-    x = odom.pose.pose.position.x
-    y = odom.pose.pose.position.y
-
-    car_global_axis = [x, y]
-
-    r = R.from_quat([qx, qy, qz, qw])
-    _, _, car_yaw = r.as_euler('xyz')
-
-
-def obstacles_callback(obstacles_msg):
-    """Update current obstacle list from obstacle detector."""
-    global current_obstacles
-    
-    # TO DO: Parse obstacles_msg and update current_obstacles
-    # Format: list of dicts [{'center': (x, y), 'radius': r}, ...]
-    pass
-
-
-# ═══════════════════════════════════════════════════════════════
-# AVOIDANCE FUNCTIONS
-# ═══════════════════════════════════════════════════════════════
-
-def find_blocking_obstacle():
-    """
-    Check if any obstacle is blocking our path.
-    
-    Returns:
-        dict: blocking obstacle {'center': (x,y), 'radius': r, 'local_y': ly}
-        None: if path is clear
-    """
-    global current_obstacles, car_global_axis, car_yaw
-    
-    # TODO: Implement
-    # For each obstacle:
-    #   1. Transform to local frame
-    #   2. Check if in front (local_x > 0)
-    #   3. Check if within DETECTION_RANGE
-    #   4. Check if within DETECTION_ANGLE
-    #   5. Return closest blocking obstacle
-    
-
-    # QUESTIONS:
-    # Are the coordinates in the dictionary relative to local position?
-
-    # 1) call the function to get the array with the coordenades and the radius
-    # I'm expecting something like this: ex:[(2, 3, 1), (4, 5, 6), (7, 8, 10)]
-
-    rover_x, rover_y = car_global_axis
-    rover_yaw = car_yaw
-
-    resultado = []
-
-    for (x, y, r) in lista_objetos:  
-        local = transform_to_local(x, y, rover_x, rover_y, rover_yaw)
-        resultado.append(local)
-
-    return resultado
-
-
-
-    pass
-
-
-def calculate_target(blocking_obstacle):
-    """
-    Calculate target point (shifted if obstacle, else goal).
-    
-    Args:
-        blocking_obstacle: obstacle dict or None
-    
-    Returns:
-        tuple: (target_x, target_y, velocity)
-    """
-    global goal_point, car_global_axis, car_yaw
-    
-    # TODO: Implement
-    # If no obstacle:
-    #   return (goal_x, goal_y, BASE_VELOCITY)
-    # If obstacle:
-    #   1. Get direction to goal
-    #   2. Shift direction away from obstacle
-    #   3. Calculate shifted target point
-    #   return (shifted_x, shifted_y, AVOIDANCE_VELOCITY)
-    
-    pass
-
-
-# ═══════════════════════════════════════════════════════════════
-# PURE PURSUIT FUNCTIONS (YOUR EXISTING CODE)
+# HELPERS
 # ═══════════════════════════════════════════════════════════════
 
 def distance(p1, p2):
-    """Euclidean distance between two points."""
     return math.sqrt((p1[0] - p2[0])**2 + (p1[1] - p2[1])**2)
 
 
-def point_global_to_local(point_global_axis, car_yaw, car_axis):
-    """Transform point from global to rover's local frame."""
-    dx = point_global_axis[0] - car_axis[0]
-    dy = point_global_axis[1] - car_axis[1]
-
-    point_local_x = dy * np.sin(car_yaw) + dx * np.cos(car_yaw)
-    point_local_y = dy * np.cos(car_yaw) - dx * np.sin(car_yaw)
-
-    return point_local_x, point_local_y
+def global_to_local(point, yaw, origin):
+    dx = point[0] - origin[0]
+    dy = point[1] - origin[1]
+    lx =  dx * math.cos(yaw) + dy * math.sin(yaw)
+    ly = -dx * math.sin(yaw) + dy * math.cos(yaw)
+    return lx, ly
 
 
-def calc_curv(point_local_y, look_ahead=LA):
-    """Calculate curvature for pure pursuit."""
-    curvature = (2 * point_local_y) / (look_ahead * look_ahead)
-    return curvature
+def local_to_global(lx, ly, yaw, origin):
+    dx = lx * math.cos(yaw) - ly * math.sin(yaw)
+    dy = lx * math.sin(yaw) + ly * math.cos(yaw)
+    return [origin[0] + dx, origin[1] + dy]
 
 
-def generate_command(curvature, linear_speed):
-    """Generate Twist command from curvature and speed."""
-    angular_speed = curvature * linear_speed
-
-    cmd = Twist()
-    cmd.linear.x = float(linear_speed)
-    cmd.angular.z = float(angular_speed)
-
-    return cmd
+def pure_pursuit_angular(target, yaw, pos, max_curv):
+    lx, ly = global_to_local(target, yaw, pos)
+    ld = math.sqrt(lx**2 + ly**2)
+    if ld < 0.01:
+        return 0.0
+    curv = (2.0 * ly) / (ld ** 2)
+    return float(np.clip(curv, -max_curv, max_curv))
 
 
 # ═══════════════════════════════════════════════════════════════
-# MAIN CONTROL LOOP
+# NODE
 # ═══════════════════════════════════════════════════════════════
 
-def control_loop(node):
-    """Main control loop - called by timer."""
-    global car_yaw, car_global_axis, goal_point, vel_pub
+class PurePursuitNode(Node):
 
-    # Wait for odometry
-    if car_yaw is None or car_global_axis is None:
-        node.get_logger().warn("Waiting for odometry...")
-        return
+    def __init__(self):
+        super().__init__('pure_pursuit_gazebo',
+                         parameter_overrides=[
+                             rclpy.parameter.Parameter(
+                                 'use_sim_time',
+                                 rclpy.parameter.Parameter.Type.BOOL, True)
+                         ])
 
-    # Check if reached goal
-    dist_to_goal = distance(car_global_axis, goal_point)
-    if dist_to_goal < GOAL_TOLERANCE:
-        cmd = Twist()
-        cmd.linear.x = 0.0
-        cmd.angular.z = 0.0
-        vel_pub.publish(cmd)
-        node.get_logger().info("Goal reached!")
-        return
+        self.declare_parameter('goal_tolerance', 0.5)
 
-    # Step 1: Find blocking obstacle
-    blocking_obstacle = find_blocking_obstacle()
+        self.car_pos  = None
+        self.car_yaw  = None
+        self.obstacles = []   # list of [x, y] in odom frame
 
-    # Step 2: Calculate target (shifted or goal)
-    target_x, target_y, velocity = calculate_target(blocking_obstacle)
+        self.tf_buffer   = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self)
 
-    # Step 3: Transform target to local frame
-    local_x, local_y = point_global_to_local(
-        [target_x, target_y], car_yaw, car_global_axis
-    )
+        self.create_subscription(Odometry,    '/odom',              self._odom_cb,      10)
+        self.create_subscription(MarkerArray, '/obstacles/markers', self._obstacles_cb, 10)
 
-    # Step 4: Calculate curvature and command
-    curv = calc_curv(local_y)
-    cmd = generate_command(curv, velocity)
+        self.vel_pub = self.create_publisher(TwistStamped, '/rover_controller/cmd_vel', 10)
+        self.create_timer(0.1, self._loop)
 
-    # Step 5: Publish
-    vel_pub.publish(cmd)
+        self.get_logger().info(f'Pure pursuit started — goal: {goal_point}')
 
-    # Logging
-    if blocking_obstacle:
-        node.get_logger().info(f"AVOIDING - vel: {cmd.linear.x:.2f}, ang: {cmd.angular.z:.2f}")
-    else:
-        node.get_logger().info(f"NORMAL - vel: {cmd.linear.x:.2f}, ang: {cmd.angular.z:.2f}")
+    # ── callbacks ─────────────────────────────────────────────────────────────
+
+    def _odom_cb(self, msg):
+        self.car_pos = [msg.pose.pose.position.x, msg.pose.pose.position.y]
+        q = msg.pose.pose.orientation
+        _, _, self.car_yaw = R.from_quat([q.x, q.y, q.z, q.w]).as_euler('xyz')
+
+    def _obstacles_cb(self, msg: MarkerArray):
+        """Convert marker bounding-box centroids into odom-frame [x, y] points."""
+        obstacles = []
+        for marker in msg.markers:
+            if marker.action == Marker.DELETE or not marker.points:   # skip DELETE markers
+                continue
+            pts = np.array([[p.x, p.y, p.z] for p in marker.points])
+            cx, cy, cz = pts.mean(axis=0)
+
+            pt = PointStamped()
+            pt.header = marker.header
+            pt.point.x, pt.point.y, pt.point.z = float(cx), float(cy), float(cz)
+
+            try:
+                pt_odom = self.tf_buffer.transform(pt, 'odom', timeout=rclpy.duration.Duration(seconds=0.05))
+                obstacles.append([pt_odom.point.x, pt_odom.point.y])
+            except Exception:
+                pass
+
+        self.obstacles = obstacles
+
+    # ── control loop ──────────────────────────────────────────────────────────
+
+    def _loop(self):
+        if self.car_pos is None or self.car_yaw is None:
+            self.get_logger().warn('Waiting for odometry…', throttle_duration_sec=2.0)
+            return
+
+        tol = self.get_parameter('goal_tolerance').value
+        if distance(self.car_pos, goal_point) < tol:
+            self._publish(0.0, 0.0)
+            self.get_logger().info('Goal reached!', throttle_duration_sec=1.0)
+            return
+
+        blocking = self._find_blocking_obstacle()
+
+        if blocking is not None:
+            target   = self._avoidance_waypoint(blocking)
+            velocity = AVOID_VELOCITY
+            self.get_logger().info(
+                f'AVOIDING obstacle at local ({blocking[0]:.2f}, {blocking[1]:.2f}) '
+                f'→ waypoint {target}',
+                throttle_duration_sec=0.5)
+        else:
+            target   = goal_point
+            velocity = BASE_VELOCITY
+
+        angular = pure_pursuit_angular(target, self.car_yaw, self.car_pos, MAX_CURVATURE)
+        self._publish(velocity, angular * velocity)
+
+    # ── avoidance ─────────────────────────────────────────────────────────────
+
+    def _find_blocking_obstacle(self):
+        """Return (local_x, local_y) of the closest obstacle blocking the path, or None."""
+        if not self.obstacles or self.car_pos is None:
+            return None
+
+        closest, closest_dist = None, float('inf')
+        for obs in self.obstacles:
+            lx, ly = global_to_local(obs, self.car_yaw, self.car_pos)
+            if lx <= 0 or lx > AVOID_RANGE:          # not ahead or too far
+                continue
+            if abs(ly) > PATH_WIDTH:                  # outside the rover's path corridor
+                continue
+            d = math.sqrt(lx**2 + ly**2)
+            if d < closest_dist:
+                closest_dist = d
+                closest = (lx, ly)
+
+        return closest
+
+    def _avoidance_waypoint(self, obstacle_local):
+        """
+        Place a waypoint just past the obstacle, offset to the clear side.
+        Obstacle perfectly centred → default to going left.
+        """
+        obs_lx, obs_ly = obstacle_local
+        side = -math.copysign(1.0, obs_ly) if obs_ly != 0 else 1.0
+
+        wp_lx = obs_lx + 0.5            # slightly past the obstacle
+        wp_ly = side * AVOID_OFFSET     # step to the clear side
+
+        return local_to_global(wp_lx, wp_ly, self.car_yaw, self.car_pos)
+
+    # ── publisher ─────────────────────────────────────────────────────────────
+
+    def _publish(self, linear_x, angular_z):
+        msg = TwistStamped()
+        msg.header.stamp    = self.get_clock().now().to_msg()
+        msg.header.frame_id = 'base_footprint'
+        msg.twist.linear.x  = float(linear_x)
+        msg.twist.angular.z = float(angular_z)
+        self.vel_pub.publish(msg)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -234,27 +195,12 @@ def control_loop(node):
 # ═══════════════════════════════════════════════════════════════
 
 def main(args=None):
-    global vel_pub
-
     rclpy.init(args=args)
-    node = rclpy.create_node("pure_pursuit_avoidance")
-
-    # Subscribers
-    node.create_subscription(Odometry, "/odom", odom_callback, 10)
-    
-    # TO DO: Subscribe to obstacles topic
-    node.create_subscription(ObstacleArray, '/obstacles', obstacles_callback, 10)
-
-    # Publisher
-    vel_pub = node.create_publisher(Twist, "/cmd_vel", 10)
-
-    # Timer (10 Hz control loop)
-    timer = node.create_timer(0.1, lambda: control_loop(node))
-
-    node.get_logger().info("Pure Pursuit with Avoidance started!")
-
-    rclpy.spin(node)
-    node.destroy_timer(timer)
+    node = PurePursuitNode()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
     node.destroy_node()
     rclpy.shutdown()
 

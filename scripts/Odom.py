@@ -171,7 +171,7 @@ def main(args=None):
         rclpy.spin(node)
     except KeyboardInterrupt:
         node.get_logger().info("Shutting down...")
-    
+
     node.destroy_node()
     rclpy.shutdown()
 

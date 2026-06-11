@@ -38,4 +38,11 @@ ros2 run tf2_ros static_transform_publisher 0 0 0 0 0 0 base_link bno055
 
 colcon build --packages-skip cmrosutils carmaker_rsds_client hellocm hellocm_cmnode hellocm_msgs
 
-	
+
+ros2 launch realsense2_camera rs_launch.py pointcloud.enable:=true
+
+
+ros2 run pcl_ros filter_passthrough_node --ros-args -p filter_field_name:=z -p filter_limit_min:=0.1 -p filter_limit_max:=2.0 -r input:=/camera/camera/depth/color/points -r output:=/pcl/front
+
+
+ros2 run pcl_ros filter_statistical_outlier_removal_node --ros-args -p mean_k:=50 -p stddev:=1.0 -r input:=/pcl/front -r output:=/pcl/denoised
