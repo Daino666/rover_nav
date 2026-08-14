@@ -1,0 +1,400 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <xacro:arg name="use_sim" default="false"/>
+
+
+  <!-- Gazebo Materials -->
+  <gazebo reference="base_link">
+    <material>
+      <ambient>0.7 0.7 0.7 1</ambient>
+      <diffuse>0.7 0.7 0.7 1</diffuse>
+      <specular>0.1 0.1 0.1 1</specular>
+    </material>
+    <mu1>0.2</mu1>
+    <mu2>0.2</mu2>
+    <kp>1000000.0</kp>
+    <kd>100.0</kd>
+  </gazebo>
+
+  <gazebo reference="C_Differential_Link">
+    <mu1>0.2</mu1>
+    <mu2>0.2</mu2>
+    <kp>1000000.0</kp>
+    <kd>100.0</kd>
+  </gazebo>
+
+  <gazebo reference="L_Connecting_Rod_Diff_Link">
+    <mu1>0.2</mu1>
+    <mu2>0.2</mu2>
+    <kp>1000000.0</kp>
+    <kd>100.0</kd>
+  </gazebo>
+
+  <gazebo reference="R_Connecting_Rod_Diff_Link">
+    <mu1>0.2</mu1>
+    <mu2>0.2</mu2>
+    <kp>1000000.0</kp>
+    <kd>100.0</kd>
+  </gazebo>
+  
+  <gazebo reference="L_Rocker_Link">
+    <mu1>0.2</mu1>
+    <mu2>0.2</mu2>
+  </gazebo>
+  
+  <gazebo reference="R_Rocker_Link">
+    <mu1>0.2</mu1>
+    <mu2>0.2</mu2>
+  </gazebo>
+  
+  <gazebo reference="L_Boggie_Link">
+    <mu1>0.2</mu1>
+    <mu2>0.2</mu2>
+  </gazebo>
+  
+  <gazebo reference="R_Boggie_Link">
+    <mu1>0.2</mu1>
+    <mu2>0.2</mu2>
+  </gazebo>
+  
+  <gazebo reference="L_1_Wheel_Link">
+    <material>
+      <ambient>0.05 0.05 0.05 1</ambient>
+      <diffuse>0.05 0.05 0.05 1</diffuse>
+      <specular>0.01 0.01 0.01 1</specular>
+    </material>
+    <mu1>2.0</mu1>
+    <mu2>2.0</mu2>
+    <kp>1000000.0</kp>
+    <kd>100.0</kd>
+    <minDepth>0.001</minDepth>
+    <maxVel>0.1</maxVel>
+    <fdir1>1 0 0</fdir1>
+  </gazebo>
+
+  <gazebo reference="L_2_Wheel_Link">
+    <material>
+      <ambient>0.05 0.05 0.05 1</ambient>
+      <diffuse>0.05 0.05 0.05 1</diffuse>
+      <specular>0.01 0.01 0.01 1</specular>
+    </material>
+    <mu1>2.0</mu1>
+    <mu2>2.0</mu2>
+    <kp>1000000.0</kp>
+    <kd>100.0</kd>
+    <minDepth>0.001</minDepth>
+    <maxVel>0.1</maxVel>
+    <fdir1>1 0 0</fdir1>
+  </gazebo>
+
+  <gazebo reference="L_3_Wheel_Link">
+    <material>
+      <ambient>0.05 0.05 0.05 1</ambient>
+      <diffuse>0.05 0.05 0.05 1</diffuse>
+      <specular>0.01 0.01 0.01 1</specular>
+    </material>
+    <mu1>2.0</mu1>
+    <mu2>2.0</mu2>
+    <kp>1000000.0</kp>
+    <kd>100.0</kd>
+    <minDepth>0.001</minDepth>
+    <maxVel>0.1</maxVel>
+    <fdir1>1 0 0</fdir1>
+  </gazebo>
+
+  <gazebo reference="R_1_Wheel_Link">
+    <material>
+      <ambient>0.05 0.05 0.05 1</ambient>
+      <diffuse>0.05 0.05 0.05 1</diffuse>
+      <specular>0.01 0.01 0.01 1</specular>
+    </material>
+    <mu1>2.0</mu1>
+    <mu2>2.0</mu2>
+    <kp>1000000.0</kp>
+    <kd>100.0</kd>
+    <minDepth>0.001</minDepth>
+    <maxVel>0.1</maxVel>
+    <fdir1>1 0 0</fdir1>
+  </gazebo>
+
+  <gazebo reference="R_2_Wheel_Link">
+    <material>
+      <ambient>0.05 0.05 0.05 1</ambient>
+      <diffuse>0.05 0.05 0.05 1</diffuse>
+      <specular>0.01 0.01 0.01 1</specular>
+    </material>
+    <mu1>2.0</mu1>
+    <mu2>2.0</mu2>
+    <kp>1000000.0</kp>
+    <kd>100.0</kd>
+    <minDepth>0.001</minDepth>
+    <maxVel>0.1</maxVel>
+    <fdir1>1 0 0</fdir1>
+  </gazebo>
+
+  <gazebo reference="R_3_Wheel_Link">
+    <material>
+      <ambient>0.05 0.05 0.05 1</ambient>
+      <diffuse>0.05 0.05 0.05 1</diffuse>
+      <specular>0.01 0.01 0.01 1</specular>
+    </material>
+    <mu1>2.0</mu1>
+    <mu2>2.0</mu2>
+    <kp>1000000.0</kp>
+    <kd>100.0</kd>
+    <minDepth>0.001</minDepth>
+    <maxVel>0.1</maxVel>
+    <fdir1>1 0 0</fdir1>
+  </gazebo>
+  
+  <gazebo reference="Lidar_Link">
+    
+  </gazebo>
+
+  <!-- Gazebo Plugin for Joint State Publisher -->
+  <!-- When ros2_control is active (use_sim=true), only publish passive joints not managed by
+       joint_state_broadcaster. Wheel and aux joints are published by ros2_control instead. -->
+  <xacro:if value="$(arg use_sim)">
+    <gazebo>
+      <plugin filename="gz-sim-joint-state-publisher-system" name="gz::sim::systems::JointStatePublisher">
+        <topic>/joint_states</topic>
+        <joint_name>L_Rocker_Joint</joint_name>
+        <joint_name>R_Rocker_Joint</joint_name>
+        <joint_name>L_Boggie_Joint</joint_name>
+        <joint_name>R_Boggie_Joint</joint_name>
+      </plugin>
+    </gazebo>
+  </xacro:if>
+  <xacro:unless value="$(arg use_sim)">
+    <gazebo>
+      <plugin filename="gz-sim-joint-state-publisher-system" name="gz::sim::systems::JointStatePublisher">
+        <topic>/joint_states</topic>
+        <joint_name>L_Rocker_Joint</joint_name>
+        <joint_name>R_Rocker_Joint</joint_name>
+        <joint_name>L_Boggie_Joint</joint_name>
+        <joint_name>R_Boggie_Joint</joint_name>
+        <joint_name>L_1_Wheel_Joint</joint_name>
+        <joint_name>L_2_Wheel_Joint</joint_name>
+        <joint_name>L_3_Wheel_Joint</joint_name>
+        <joint_name>R_1_Wheel_Joint</joint_name>
+        <joint_name>R_2_Wheel_Joint</joint_name>
+        <joint_name>R_3_Wheel_Joint</joint_name>
+        <joint_name>aux_L_Rocker_joint</joint_name>
+        <joint_name>aux_R_Rocker_joint</joint_name>
+      </plugin>
+    </gazebo>
+  </xacro:unless>
+
+  <gazebo>
+   
+    <plugin filename="gz-sim-joint-position-controller-system"
+        name="gz::sim::systems::JointPositionController">
+
+    <joint_name>L_Rocker_Joint</joint_name>
+    <topic>/model/aries/joint/L_Rocker_Joint/cmd_pos</topic>
+
+    <p_gain>80</p_gain>
+    <i_gain>0.0</i_gain>
+    <d_gain>15</d_gain>
+
+    <i_min>-1</i_min>
+    <i_max>1</i_max>
+
+</plugin>
+
+
+<plugin filename="gz-sim-joint-position-controller-system"
+        name="gz::sim::systems::JointPositionController">
+
+    <joint_name>R_Rocker_Joint</joint_name>
+    <topic>/model/aries/joint/R_Rocker_Joint/cmd_pos</topic>
+
+    <p_gain>80</p_gain>
+    <i_gain>0.0</i_gain>
+    <d_gain>15</d_gain>
+
+    <i_min>-1</i_min>
+    <i_max>1</i_max>
+
+</plugin>
+
+     
+    <!-- <plugin filename="gz-sim-joint-position-controller-system"
+        name="gz::sim::systems::JointPositionController">
+      <joint_name>L_Boggie_Joint</joint_name>
+      <topic>/model/aries/joint/L_Boggie_Joint/cmd_pos</topic>
+    </plugin>
+
+    
+    
+    <plugin filename="gz-sim-joint-position-controller-system"
+        name="gz::sim::systems::JointPositionController">
+      <joint_name>R_Boggie_Joint</joint_name>
+      <topic>/model/aries/joint/R_Boggie_Joint/cmd_pos</topic>
+    </plugin> -->
+
+    <!-- Arm joint controllers disabled - ros2_control handles these via MoveIt -->
+    
+    <!-- <plugin filename="gz-sim-joint-position-controller-system"
+        name="gz::sim::systems::JointPositionController">
+      <joint_name>joint1</joint_name>
+      <topic>/model/aries/joint/joint1/cmd_pos</topic>
+      <p_gain>1000</p_gain><i_gain>2</i_gain><d_gain>300</d_gain>
+      <i_min>-6</i_min><i_max>6</i_max>
+    </plugin>
+
+    <plugin filename="gz-sim-joint-position-controller-system"
+        name="gz::sim::systems::JointPositionController">
+      <joint_name>joint2</joint_name>
+      <topic>/model/aries/joint/joint2/cmd_pos</topic>
+      <p_gain>1000</p_gain><i_gain>2</i_gain><d_gain>300</d_gain>
+      <i_min>-6</i_min><i_max>6</i_max>
+    </plugin>
+
+    <plugin filename="gz-sim-joint-position-controller-system"
+        name="gz::sim::systems::JointPositionController">
+      <joint_name>joint3</joint_name>
+      <topic>/model/aries/joint/joint3/cmd_pos</topic>
+      <p_gain>1000</p_gain><i_gain>2</i_gain><d_gain>300</d_gain>
+      <i_min>-6</i_min><i_max>6</i_max>
+    </plugin>
+
+    <plugin filename="gz-sim-joint-position-controller-system"
+        name="gz::sim::systems::JointPositionController">
+      <joint_name>joint4</joint_name>
+      <topic>/model/aries/joint/joint4/cmd_pos</topic>
+      <p_gain>1000</p_gain><i_gain>2</i_gain><d_gain>300</d_gain>
+      <i_min>-6</i_min><i_max>6</i_max>
+    </plugin>
+
+    <plugin filename="gz-sim-joint-position-controller-system"
+        name="gz::sim::systems::JointPositionController">
+      <joint_name>joint5</joint_name>
+      <topic>/model/aries/joint/joint5/cmd_pos</topic>
+      <p_gain>1000</p_gain><i_gain>2</i_gain><d_gain>300</d_gain>
+      <i_min>-6</i_min><i_max>6</i_max>
+    </plugin>
+
+    <plugin filename="gz-sim-joint-position-controller-system"
+        name="gz::sim::systems::JointPositionController">
+      <joint_name>joint6</joint_name>
+      <topic>/model/aries/joint/joint6/cmd_pos</topic>
+      <p_gain>1000</p_gain><i_gain>2</i_gain><d_gain>300</d_gain>
+      <i_min>-6</i_min><i_max>6</i_max>
+    </plugin> -->
+
+    <!-- Gripper controllers disabled - ros2_control handles these via MoveIt -->
+    <!-- <plugin filename="gz-sim-joint-position-controller-system"
+        name="gz::sim::systems::JointPositionController">
+      <joint_name>gripper_gear_left_joint</joint_name>
+      <topic>/model/aries/joint/gripper_gear_left_joint/cmd_pos</topic>
+      <p_gain>1000</p_gain><i_gain>2</i_gain><d_gain>300</d_gain>
+      <i_min>-6</i_min><i_max>6</i_max>
+    </plugin> -->
+
+    <!-- <plugin filename="gz-sim-joint-position-controller-system"
+        name="gz::sim::systems::JointPositionController">
+      <joint_name>arm_gripper_left_joint</joint_name>
+      <topic>/model/aries/joint/arm_gripper_left_joint/cmd_pos</topic>
+      <p_gain>1000</p_gain><i_gain>2</i_gain><d_gain>300</d_gain>
+      <i_min>-6</i_min><i_max>6</i_max>
+    </plugin>
+
+    <plugin filename="gz-sim-joint-position-controller-system"
+        name="gz::sim::systems::JointPositionController">
+      <joint_name>arm_gripper_right_joint</joint_name>
+      <topic>/model/aries/joint/arm_gripper_right_joint/cmd_pos</topic>
+      <p_gain>1000</p_gain><i_gain>2</i_gain><d_gain>300</d_gain>
+      <i_min>-6</i_min><i_max>6</i_max>
+    </plugin> -->
+
+  </gazebo>
+
+  
+
+  <!-- Gazebo Plugin for Pose Publisher -->
+  <gazebo>
+    <plugin filename="gz-sim-pose-publisher-system" name="gz::sim::systems::PosePublisher">
+      <publish_link_pose>true</publish_link_pose>
+      <use_pose_vector_msg>true</use_pose_vector_msg>
+      <static_publisher>true</static_publisher>
+      <static_update_frequency>100</static_update_frequency>
+    </plugin>
+  </gazebo>
+
+  <!-- Odometry Plugin -->
+  <gazebo>
+        <plugin filename="libgz-sim-odometry-publisher-system"
+            name="gz::sim::systems::OdometryPublisher">
+            <odom_frame>odom</odom_frame>
+            <robot_base_frame>base_footprint</robot_base_frame>
+            <odom_topic>/odom</odom_topic>
+            <!-- <tf_topic>/model/aries/tf</tf_topic> -->
+            <dimensions>2</dimensions>
+            <odom_publish_frequency>100</odom_publish_frequency>
+        </plugin>
+  </gazebo>
+    
+  <gazebo reference="imu_frame">
+      <sensor name="imu_sensor" type="imu">
+          <always_on>1</always_on>
+          <update_rate>100</update_rate>
+          <gz_frame_id>imu_frame</gz_frame_id>
+          <visualize>true</visualize>
+          <topic>/imu</topic>
+          <!-- Without this, gz-sim's IMU zeroes yaw relative to whatever
+               orientation the model had when the sensor was instantiated
+               (spawn-relative), not true world orientation: roll/pitch
+               stay gravity-referenced (correct) but yaw silently drifts off
+               by however much the spawn pose was rotated (spawn_yaw in
+               my_robot.launch.py), which fed a wrong heading into the EKF
+               and desynced RViz's displayed orientation from Gazebo's real
+               one. Forcing world-fixed ENU makes yaw absolute. -->
+          <imu>
+              <orientation_reference_frame>
+                  <localization>ENU</localization>
+              </orientation_reference_frame>
+          </imu>
+      </sensor>
+  </gazebo>
+
+
+  <!-- Gazebo Plugin for Diff Drive (disabled when ros2_control handles driving) -->
+  <xacro:unless value="$(arg use_sim)">
+    <gazebo>
+      <plugin filename="gz-sim-diff-drive-system" name="gz::sim::systems::DiffDrive">
+        <left_joint>L_1_Wheel_Joint</left_joint>
+        <left_joint>L_2_Wheel_Joint</left_joint>
+        <left_joint>L_3_Wheel_Joint</left_joint>
+        <right_joint>R_1_Wheel_Joint</right_joint>
+        <right_joint>R_2_Wheel_Joint</right_joint>
+        <right_joint>R_3_Wheel_Joint</right_joint>
+        <!-- True geometric track width from URDF forward kinematics (see
+             rover_controllers/config/diff_controller.yaml), was 0.45 which
+             didn't match the actual robot geometry. This plugin is inactive
+             under the default launch (use_sim:=true uses ros2_control
+             instead), but kept correct in case it's ever re-enabled. -->
+        <wheel_separation>0.7095</wheel_separation>
+        <wheel_radius>0.1100</wheel_radius>
+        <frame_id>odom</frame_id>
+        <topic>/model/aries/cmd_vel</topic>
+        <child_frame_id>base_footprint</child_frame_id>
+      </plugin>
+    </gazebo>
+  </xacro:unless>
+
+
+  
+
+
+
+
+
+    
+
+    
+
+    
+
+</robot>

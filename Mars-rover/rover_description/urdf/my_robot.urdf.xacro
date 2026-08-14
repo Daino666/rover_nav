@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<robot name="aries" xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+    <!-- <xacro:arg name="gripper_hardware_protocol" default="$(arg hardware_protocol)" />
+    <xacro:property name="gripper_hardware_protocol" value="$(arg gripper_hardware_protocol)" /> -->
+
+    <!-- Teensy gripper serial port (only used when hardware_protocol=rebel) -->
+    <!-- <xacro:arg name="serial_port" default="/dev/ttyACM0" /> -->
+    <!-- <xacro:property name="serial_port" value="$(arg serial_port)" /> -->
+
+    <xacro:include filename="common_properties.xacro" />
+    <xacro:include filename="aries_gazebo.xacro" />
+    <xacro:include filename="aries_base.xacro" />
+    <xacro:include filename="differential_link.xacro" />
+    <xacro:include filename="left_link.xacro" />
+    <xacro:include filename="right_link.xacro" />
+    <xacro:include filename="rover_control.xacro" />
+    <!-- zed2i.xacro requires the zed_description package, which isn't
+         installed on this machine yet. Disabled so the URDF can still be
+         generated; re-enable once zed_description is available. -->
+    <!-- <xacro:include filename="zed2i.xacro"/> -->
+
+    
+
+</robot>

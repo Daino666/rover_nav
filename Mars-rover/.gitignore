@@ -1,0 +1,8 @@
+build/
+install/
+log/
+__pycache__/
+*.pdf
+*.csv
+.vscode/
+rover_nav/
