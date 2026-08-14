@@ -28,6 +28,50 @@ chmod +x install_dependencies.sh
 
 ---
 
+## Commands for generating new costmaps
+
+The occupancy grid (costmap) is generated once from the terrain heightmap
+and cached as a PGM+YAML pair — regenerate it if you change the terrain,
+or want to retune how aggressively it marks terrain as blocked.
+
+```bash
+cd ~/jazzy_ws/src/Mars-rover/tools
+nano generate_occupancy_grid.py   # edit the PARAMETERS block near the top
+python3 generate_occupancy_grid.py
+```
+
+**Parameters you can change** (all in the `PARAMETERS` block, lines ~49–83):
+
+| Parameter | Default | What it does |
+|---|---|---|
+| `SLOPE_THRESH_DEG` | `25.0` | Max climbable slope in degrees. A cell is marked occupied if terrain tilt exceeds this. |
+| `ROUGHNESS_THRESH_M` | `0.06` | Max local elevation jitter (meters) tolerated before a cell is occupied — catches rock clusters/steps that a smooth slope reading would miss. |
+| `ROUGHNESS_WINDOW_CELLS` | `3` | Neighborhood size (in 10cm cells) used to compute roughness. Smaller = more sensitive to individual small rocks. |
+| `INFLATE_RADIUS_M` | `0.20` | How far occupied cells get padded outward (~half the rover's track width), so planned paths keep real clearance. `0` disables inflation. |
+| `SLOPE_METHOD` | `"mesh"` | `"mesh"` (recommended): slope fit directly from raw mesh vertices, most accurate. `"grid"`: faster finite-difference on the heightmap raster, fallback if the mesh file isn't available. |
+| `SLOPE_MESH_RADIUS_M` | `0.15` | (`SLOPE_METHOD="mesh"` only) Radius of mesh vertices considered per grid cell when fitting local slope. Larger = smoother but blurs small features. |
+| `SLOPE_SMOOTH_M` | `0.3` | (`SLOPE_METHOD="grid"` only) Gaussian smoothing applied before computing slope, to remove scan noise. |
+
+A cell ends up occupied if `slope > SLOPE_THRESH_DEG` **OR**
+`roughness > ROUGHNESS_THRESH_M` — then gets grown outward by
+`INFLATE_RADIUS_M`. Every run also prints each survey point's
+clear/BLOCKED status to the console, so you can see the effect of a
+parameter change immediately.
+
+All of the same parameters can also be set as command-line flags instead
+of edited in the file, e.g. `python3 generate_occupancy_grid.py --slope-thresh 30`
+— run `--help` for the full list.
+
+**Where the files go** (all under `~/jazzy_ws/src/marsyard/`):
+- `marsyard2026_occupancy.pgm` + `marsyard2026_occupancy.yaml` — the actual costmap `nav2_planning.launch.py` loads (`map_server`'s `yaml_filename` points here)
+- `marsyard2026_occupancy_preview.png` — every survey point plotted on the map, color-coded clear/BLOCKED, so you can check the new parameters before planning a path against them
+- `mesh_slope_cache.npy` — cached mesh-vertex slope computation (only with `SLOPE_METHOD="mesh"`); delete it or pass `--no-slope-cache` to force a recompute if the mesh source changed
+
+Restart `nav2_planning.launch.py` after regenerating (`map_server` loads
+the PGM/YAML once at startup, it won't pick up a change live).
+
+---
+
 ## Commands to test
 
 ### Representing and testing the path
