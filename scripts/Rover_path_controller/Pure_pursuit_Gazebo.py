@@ -1,193 +1,273 @@
 #!/usr/bin/env python3
+"""
+Pure pursuit path follower for the Gazebo sim.
+
+Path source: loaded once at startup from PATH_CSV (plain "x,y" rows in
+meters -- same format plan_multi_point_tour.py / plan_path.py write). The
+old single hardcoded goal_point = [7, 11] is gone; the rover now follows a
+lookahead search over the full loaded path (same pattern as
+Testing_PPC_logic_matplotlib.py's clean prototype, generalized from a single
+goal to a full route).
+
+Odometry: /odometry/filtered (the EKF's output), was /odom.
+
+Control output: /rover_controller/cmd_vel as geometry_msgs/TwistStamped
+(was Twist on /cmd_vel) -- matches what the sim's diff_drive_controller
+actually subscribes to (use_stamped_vel: true in diff_controller.yaml).
+"""
+import csv
 import math
+import os
+
 import numpy as np
 import rclpy
-from rclpy.node import Node
+from geometry_msgs.msg import PoseStamped, TwistStamped
+from nav_msgs.msg import Odometry, Path
+from rclpy.qos import QoSDurabilityPolicy, QoSProfile
 from scipy.spatial.transform import Rotation as R
-from nav_msgs.msg import Odometry
-from geometry_msgs.msg import TwistStamped, PointStamped
-from visualization_msgs.msg import Marker, MarkerArray
-from tf2_ros import Buffer, TransformListener
-import tf2_geometry_msgs  # noqa: F401  (registers PointStamped transform support)
 
+# ═══════════════════════════════════════════════════════════════
+# GLOBAL VARIABLES
+# ═══════════════════════════════════════════════════════════════
+
+# Rover state (from odom)
+car_yaw = None
+car_global_axis = None
+
+# Path to follow: "x,y" rows in meters, same S1-origin world frame as
+# everything else (see plan_multi_point_tour.py / plan_path.py, which both
+# write exactly this format).
+PATH_CSV = os.path.expanduser("~/jazzy_ws/src/marsyard/marsyard2026_tour_waypoints.csv")
+path = []
+current_target_idx = 0
+
+# Publisher
+vel_pub = None
 
 # ═══════════════════════════════════════════════════════════════
 # PARAMETERS
 # ═══════════════════════════════════════════════════════════════
+# Lookahead distance is the only tunable knob (ROS parameter
+# "lookahead_distance", default 1.0m) -- everything else below is fixed by
+# the rover's actual geometry/desired behavior, not something to tune per
+# run. Tune live with:
+#   ros2 param set /pure_pursuit lookahead_distance 1.5
 
-BASE_VELOCITY  = 1.0   # normal cruising speed (m/s)
-AVOID_VELOCITY = 0.5   # speed while dodging an obstacle (m/s)
-MAX_CURVATURE  = 2.0
+LA = 1.0                    # Lookahead distance default (m), overridden by the ROS param at startup
+WHEEL_BASE = 0.7095         # m -- from URDF forward kinematics (was 0.6)
 
-AVOID_RANGE    = 2.0   # only react to obstacles within this distance ahead (m)
-PATH_WIDTH     = 0.5   # obstacle must be within this lateral band to count as blocking (m)
-AVOID_OFFSET   = 0.8   # lateral shift of the avoidance waypoint (m)
+BASE_VELOCITY = 0.5         # Normal speed (m/s)
+GOAL_TOLERANCE = 0.3        # Stop when this close to goal (m)
+MAX_CURVATURE = 2.0         # 1/m -- caps angular command when the target is much farther than LA
+                             # (e.g. right after startup if the rover isn't sitting at path[0])
+STUCK_TICKS_LIMIT = 30      # control_loop runs at 10Hz -- 30 ticks = 3s with no index progress
 
-goal_point = [7.0, 11.0]
+target_idx_initialized = False
+_last_seen_idx = None
+_stuck_ticks = 0
 
 
 # ═══════════════════════════════════════════════════════════════
-# HELPERS
+# PATH LOADING
+# ═══════════════════════════════════════════════════════════════
+
+def load_path(csv_path):
+    pts = []
+    with open(csv_path, newline="") as f:
+        reader = csv.reader(f)
+        rows = list(reader)
+    for row in rows:
+        if not row or len(row) < 2:
+            continue
+        try:
+            pts.append([float(row[0]), float(row[1])])
+        except ValueError:
+            continue  # header row
+    return pts
+
+
+# ═══════════════════════════════════════════════════════════════
+# CALLBACKS
+# ═══════════════════════════════════════════════════════════════
+
+def odom_callback(odom):
+    """Update rover position and heading from odometry."""
+    global car_yaw
+    global car_global_axis
+
+    qx = odom.pose.pose.orientation.x
+    qy = odom.pose.pose.orientation.y
+    qz = odom.pose.pose.orientation.z
+    qw = odom.pose.pose.orientation.w
+
+    x = odom.pose.pose.position.x
+    y = odom.pose.pose.position.y
+
+    car_global_axis = [x, y]
+
+    r = R.from_quat([qx, qy, qz, qw])
+    _, _, car_yaw = r.as_euler('xyz')
+
+
+# ═══════════════════════════════════════════════════════════════
+# PURE PURSUIT FUNCTIONS
 # ═══════════════════════════════════════════════════════════════
 
 def distance(p1, p2):
+    """Euclidean distance between two points."""
     return math.sqrt((p1[0] - p2[0])**2 + (p1[1] - p2[1])**2)
 
 
-def global_to_local(point, yaw, origin):
-    dx = point[0] - origin[0]
-    dy = point[1] - origin[1]
-    lx =  dx * math.cos(yaw) + dy * math.sin(yaw)
-    ly = -dx * math.sin(yaw) + dy * math.cos(yaw)
-    return lx, ly
+def point_global_to_local(point_global_axis, car_yaw, car_axis):
+    """Transform point from global to rover's local frame."""
+    dx = point_global_axis[0] - car_axis[0]
+    dy = point_global_axis[1] - car_axis[1]
+
+    point_local_x = dy * np.sin(car_yaw) + dx * np.cos(car_yaw)
+    point_local_y = dy * np.cos(car_yaw) - dx * np.sin(car_yaw)
+
+    return point_local_x, point_local_y
 
 
-def local_to_global(lx, ly, yaw, origin):
-    dx = lx * math.cos(yaw) - ly * math.sin(yaw)
-    dy = lx * math.sin(yaw) + ly * math.cos(yaw)
-    return [origin[0] + dx, origin[1] + dy]
+def calc_curv(point_local_y, look_ahead=LA):
+    """Calculate curvature for pure pursuit."""
+    curvature = (2 * point_local_y) / (look_ahead * look_ahead)
+    return max(-MAX_CURVATURE, min(MAX_CURVATURE, curvature))
 
 
-def pure_pursuit_angular(target, yaw, pos, max_curv):
-    lx, ly = global_to_local(target, yaw, pos)
-    ld = math.sqrt(lx**2 + ly**2)
-    if ld < 0.01:
-        return 0.0
-    curv = (2.0 * ly) / (ld ** 2)
-    return float(np.clip(curv, -max_curv, max_curv))
+def generate_command(curvature, linear_speed):
+    """Generate a (linear, angular) command from curvature and speed."""
+    angular_speed = curvature * linear_speed
+    return float(linear_speed), float(angular_speed)
+
+
+def publish_cmd_vel(node, linear, angular):
+    msg = TwistStamped()
+    msg.header.stamp = node.get_clock().now().to_msg()
+    msg.header.frame_id = "base_footprint"
+    msg.twist.linear.x = float(linear)
+    msg.twist.angular.z = float(angular)
+    vel_pub.publish(msg)
+
+
+def next_lookahead_point():
+    """Advance current_target_idx and return the next point on `path` at
+    least LA away from the rover, same lookahead-search pattern as
+    Testing_PPC_logic_matplotlib.py's prototype."""
+    global current_target_idx
+    lookahead_point = None
+    for i in range(current_target_idx, len(path)):
+        if distance(car_global_axis, path[i]) >= LA:
+            lookahead_point = path[i]
+            current_target_idx = i
+            break
+    if lookahead_point is None:
+        lookahead_point = path[-1]
+    return lookahead_point
 
 
 # ═══════════════════════════════════════════════════════════════
-# NODE
+# MAIN CONTROL LOOP
 # ═══════════════════════════════════════════════════════════════
 
-class PurePursuitNode(Node):
+def control_loop(node):
+    """Main control loop - called by timer."""
+    global car_yaw, car_global_axis, vel_pub, LA, current_target_idx, target_idx_initialized
 
-    def __init__(self):
-        super().__init__('pure_pursuit_gazebo',
-                         parameter_overrides=[
-                             rclpy.parameter.Parameter(
-                                 'use_sim_time',
-                                 rclpy.parameter.Parameter.Type.BOOL, True)
-                         ])
+    LA = node.get_parameter("lookahead_distance").value
 
-        self.declare_parameter('goal_tolerance', 0.5)
+    if car_yaw is None or car_global_axis is None:
+        node.get_logger().warn("Waiting for odometry...")
+        return
 
-        self.car_pos  = None
-        self.car_yaw  = None
-        self.obstacles = []   # list of [x, y] in odom frame
+    if not path:
+        node.get_logger().warn(f"Path is empty (checked {PATH_CSV})")
+        return
 
-        self.tf_buffer   = Buffer()
-        self.tf_listener = TransformListener(self.tf_buffer, self)
+    # The lookahead search below assumes current_target_idx tracks the
+    # rover's actual progress along the path. If the rover isn't sitting at
+    # path[0] when this node starts (e.g. it already drove somewhere before
+    # this process launched), starting the search at index 0 would lock the
+    # target onto a faraway point instead of the nearby path segment. Fix
+    # that up once, on the first control tick, by snapping to the closest
+    # point on the path.
+    if not target_idx_initialized:
+        current_target_idx = min(
+            range(len(path)), key=lambda i: distance(car_global_axis, path[i])
+        )
+        target_idx_initialized = True
 
-        self.create_subscription(Odometry,    '/odom',              self._odom_cb,      10)
-        self.create_subscription(MarkerArray, '/obstacles/markers', self._obstacles_cb, 10)
+    # Only allow a goal-reached stop once the lookahead search has actually
+    # worked its way to the final point on the path -- the tour path is a
+    # closed loop that ends back near its own start, so checking distance to
+    # path[-1] alone would trigger immediately at t=0 before the rover ever
+    # moves.
+    on_final_segment = current_target_idx >= len(path) - 1
+    dist_to_goal = distance(car_global_axis, path[-1])
+    if on_final_segment and dist_to_goal < GOAL_TOLERANCE:
+        publish_cmd_vel(node, 0.0, 0.0)
+        node.get_logger().info("Goal reached!")
+        return
 
-        self.vel_pub = self.create_publisher(TwistStamped, '/rover_controller/cmd_vel', 10)
-        self.create_timer(0.1, self._loop)
+    target_x, target_y = next_lookahead_point()
 
-        self.get_logger().info(f'Pure pursuit started — goal: {goal_point}')
+    # Geometric curvature clamping alone isn't enough to guarantee progress:
+    # if the clamped turn radius is too tight to actually reach the current
+    # target (e.g. the sharp loop-closure segment where the tour path curves
+    # back to meet its own start), the rover can lock into an indefinite
+    # tight circle around a target it never gets close enough to advance
+    # past. Sustained circling like that was traced back to a real rollover
+    # in testing, so detect "no index progress" and force-advance instead of
+    # letting it spin forever.
+    global _last_seen_idx, _stuck_ticks
+    if current_target_idx == _last_seen_idx:
+        _stuck_ticks += 1
+    else:
+        _stuck_ticks = 0
+        _last_seen_idx = current_target_idx
 
-    # ── callbacks ─────────────────────────────────────────────────────────────
+    if _stuck_ticks >= STUCK_TICKS_LIMIT:
+        node.get_logger().warn(
+            f"Target index {current_target_idx} hasn't advanced in "
+            f"{STUCK_TICKS_LIMIT / 10:.0f}s (stuck circling) -- forcing it forward."
+        )
+        current_target_idx = min(current_target_idx + 1, len(path) - 1)
+        target_x, target_y = path[current_target_idx]
+        _stuck_ticks = 0
+        _last_seen_idx = current_target_idx
 
-    def _odom_cb(self, msg):
-        self.car_pos = [msg.pose.pose.position.x, msg.pose.pose.position.y]
-        q = msg.pose.pose.orientation
-        _, _, self.car_yaw = R.from_quat([q.x, q.y, q.z, q.w]).as_euler('xyz')
+    local_x, local_y = point_global_to_local(
+        [target_x, target_y], car_yaw, car_global_axis
+    )
 
-    def _obstacles_cb(self, msg: MarkerArray):
-        """Convert marker bounding-box centroids into odom-frame [x, y] points."""
-        obstacles = []
-        for marker in msg.markers:
-            if marker.action == Marker.DELETE or not marker.points:   # skip DELETE markers
-                continue
-            pts = np.array([[p.x, p.y, p.z] for p in marker.points])
-            cx, cy, cz = pts.mean(axis=0)
+    curv = calc_curv(local_y, look_ahead=LA)
+    linear, angular = generate_command(curv, BASE_VELOCITY)
 
-            pt = PointStamped()
-            pt.header = marker.header
-            pt.point.x, pt.point.y, pt.point.z = float(cx), float(cy), float(cz)
+    publish_cmd_vel(node, linear, angular)
 
-            try:
-                pt_odom = self.tf_buffer.transform(pt, 'odom', timeout=rclpy.duration.Duration(seconds=0.05))
-                obstacles.append([pt_odom.point.x, pt_odom.point.y])
-            except Exception:
-                pass
+    node.get_logger().info(
+        f"pos: {car_global_axis} | target: [{target_x:.2f}, {target_y:.2f}] "
+        f"| vel: {linear:.2f}, ang: {angular:.2f}",
+        throttle_duration_sec=0.5,
+    )
 
-        self.obstacles = obstacles
 
-    # ── control loop ──────────────────────────────────────────────────────────
-
-    def _loop(self):
-        if self.car_pos is None or self.car_yaw is None:
-            self.get_logger().warn('Waiting for odometry…', throttle_duration_sec=2.0)
-            return
-
-        tol = self.get_parameter('goal_tolerance').value
-        if distance(self.car_pos, goal_point) < tol:
-            self._publish(0.0, 0.0)
-            self.get_logger().info('Goal reached!', throttle_duration_sec=1.0)
-            return
-
-        blocking = self._find_blocking_obstacle()
-
-        if blocking is not None:
-            target   = self._avoidance_waypoint(blocking)
-            velocity = AVOID_VELOCITY
-            self.get_logger().info(
-                f'AVOIDING obstacle at local ({blocking[0]:.2f}, {blocking[1]:.2f}) '
-                f'→ waypoint {target}',
-                throttle_duration_sec=0.5)
-        else:
-            target   = goal_point
-            velocity = BASE_VELOCITY
-
-        angular = pure_pursuit_angular(target, self.car_yaw, self.car_pos, MAX_CURVATURE)
-        self._publish(velocity, angular * velocity)
-
-    # ── avoidance ─────────────────────────────────────────────────────────────
-
-    def _find_blocking_obstacle(self):
-        """Return (local_x, local_y) of the closest obstacle blocking the path, or None."""
-        if not self.obstacles or self.car_pos is None:
-            return None
-
-        closest, closest_dist = None, float('inf')
-        for obs in self.obstacles:
-            lx, ly = global_to_local(obs, self.car_yaw, self.car_pos)
-            if lx <= 0 or lx > AVOID_RANGE:          # not ahead or too far
-                continue
-            if abs(ly) > PATH_WIDTH:                  # outside the rover's path corridor
-                continue
-            d = math.sqrt(lx**2 + ly**2)
-            if d < closest_dist:
-                closest_dist = d
-                closest = (lx, ly)
-
-        return closest
-
-    def _avoidance_waypoint(self, obstacle_local):
-        """
-        Place a waypoint just past the obstacle, offset to the clear side.
-        Obstacle perfectly centred → default to going left.
-        """
-        obs_lx, obs_ly = obstacle_local
-        side = -math.copysign(1.0, obs_ly) if obs_ly != 0 else 1.0
-
-        wp_lx = obs_lx + 0.5            # slightly past the obstacle
-        wp_ly = side * AVOID_OFFSET     # step to the clear side
-
-        return local_to_global(wp_lx, wp_ly, self.car_yaw, self.car_pos)
-
-    # ── publisher ─────────────────────────────────────────────────────────────
-
-    def _publish(self, linear_x, angular_z):
-        msg = TwistStamped()
-        msg.header.stamp    = self.get_clock().now().to_msg()
-        msg.header.frame_id = 'base_footprint'
-        msg.twist.linear.x  = float(linear_x)
-        msg.twist.angular.z = float(angular_z)
-        self.vel_pub.publish(msg)
+def publish_path(node, path_pub):
+    """Publish the loaded path as a nav_msgs/Path (in the "map" frame -- the
+    world/S1-origin frame the CSV waypoints are already expressed in) so
+    RViz can show the route the rover is actually following, since it's
+    driving off this pre-planned CSV rather than a live Nav2 planning call."""
+    msg = Path()
+    msg.header.frame_id = "map"
+    msg.header.stamp = node.get_clock().now().to_msg()
+    for x, y in path:
+        pose = PoseStamped()
+        pose.header = msg.header
+        pose.pose.position.x = x
+        pose.pose.position.y = y
+        pose.pose.orientation.w = 1.0
+        msg.poses.append(pose)
+    path_pub.publish(msg)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -195,12 +275,38 @@ class PurePursuitNode(Node):
 # ═══════════════════════════════════════════════════════════════
 
 def main(args=None):
+    global vel_pub, path
+
     rclpy.init(args=args)
-    node = PurePursuitNode()
+    node = rclpy.create_node("pure_pursuit")
+    node.declare_parameter("lookahead_distance", LA)
+
     try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass
+        path = load_path(PATH_CSV)
+        node.get_logger().info(f"Loaded {len(path)} path points from {PATH_CSV}")
+    except FileNotFoundError:
+        node.get_logger().error(
+            f"Path file not found: {PATH_CSV} -- run plan_multi_point_tour.py or plan_path.py "
+            "first, or point PATH_CSV at an existing waypoints CSV."
+        )
+        path = []
+
+    node.create_subscription(Odometry, "/odometry/filtered", odom_callback, 10)
+    vel_pub = node.create_publisher(TwistStamped, "/rover_controller/cmd_vel", 10)
+
+    # Transient local so RViz gets the path even if it subscribes after this
+    # one-shot publish.
+    path_qos = QoSProfile(depth=1, durability=QoSDurabilityPolicy.TRANSIENT_LOCAL)
+    path_pub = node.create_publisher(Path, "/pure_pursuit/path", path_qos)
+    if path:
+        publish_path(node, path_pub)
+
+    timer = node.create_timer(0.1, lambda: control_loop(node))
+
+    node.get_logger().info("Pure Pursuit started!")
+
+    rclpy.spin(node)
+    node.destroy_timer(timer)
     node.destroy_node()
     rclpy.shutdown()
 

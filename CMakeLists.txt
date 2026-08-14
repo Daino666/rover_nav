@@ -19,7 +19,7 @@ install(
     scripts/Odom.py
     scripts/rover_controller_pure_pursuit.py
     scripts/Rover_path_controller/Pure_pursuit_Gazebo.py
-    scripts/Rover_path_controller/pcl_obstacle_detector.py
+    scripts/odom_tf_broadcaster.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
@@ -33,4 +33,24 @@ install(DIRECTORY
   config
   DESTINATION share/${PROJECT_NAME}/
 )
+
+install(DIRECTORY
+  rviz
+  DESTINATION share/${PROJECT_NAME}/
+)
+
+install(DIRECTORY
+  scripts/Sounds
+  DESTINATION share/${PROJECT_NAME}/sounds/
+)
+
+if(BUILD_TESTING)
+  find_package(ament_cmake_pytest REQUIRED)
+  ament_add_pytest_test(
+    odometry_stationary
+    test/test_odometry_stationary.py
+    TIMEOUT 60
+  )
+endif()
+
 ament_package()

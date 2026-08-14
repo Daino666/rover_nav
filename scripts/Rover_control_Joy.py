@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import os
 import rclpy
 from rclpy.node import Node
 from odrive_can.srv import AxisState
@@ -8,29 +9,27 @@ import time
 import subprocess
 
 # Configuration
-MAX_VELOCITY = 0.35          # rev/s
-TURN_VELOCITY_180 = 0.7      # rev/s for 180° turn
-TURN_DURATION = 2.1          # seconds for 180° turn
-TURN_BOOST = 1.2             # Multiplier for joystick turns
+MAX_VELOCITY = 1.5           # rev/s - increased from default
+TURN_BOOST = 1.5              # Multiplier for joystick turns
 TURN_THRESHOLD = 0.2         # Below this = spin in place
-DEADZONE = 0.10              # Ignore small joystick drift
+DEADZONE = 0.08              # Ignore small joystick drift
 
-# Sound
-B_SOUND_FILE = "/home/daino/colcon_ws/src/rover_nav/scripts/Sounds/Merry_Chirstmas.wav"
+# Sound — resolved via ament index so path is install-agnostic
+import ament_index_python.packages as _ament_pkg
+B_SOUND_FILE = os.path.join(
+    _ament_pkg.get_package_share_directory("rover_nav"),
+    "sounds", "Sounds", "Merry_Chirstmas.wav",
+)
 
 # Global state
 target_right_velocity = 0.0
 target_left_velocity = 0.0
 trigger = 0
-turn_button = 0
-prev_turn_button = 0
 prev_B_button = 0
-is_turning = False
-turn_start_time = 0.0
 node = None
 current_right_velocity = 0.0
 current_left_velocity = 0.0
-ACCEL_LIMIT = 1.5  # rev/s²
+ACCEL_LIMIT = 3.0  # rev/s² - adjust this for ramp speed
 
 def apply_deadzone(value, threshold=DEADZONE):
     """Remove joystick drift"""
@@ -52,14 +51,13 @@ def ramp_velocity(current, target, dt, max_accel=ACCEL_LIMIT):
 
 def joy_callback(joy_msg):
     global target_right_velocity, target_left_velocity, node
-    global trigger, turn_button, prev_turn_button, is_turning, turn_start_time, prev_B_button
+    global trigger, prev_B_button
 
     # Read joystick
     vertical = apply_deadzone(-joy_msg.axes[3])
     horizontal = apply_deadzone(joy_msg.axes[2])
     B_button = joy_msg.buttons[1]
     trigger = joy_msg.buttons[7]
-    turn_button = joy_msg.buttons[6]
 
     # Determine mode: spin vs drive
     if abs(vertical) < TURN_THRESHOLD and abs(horizontal) > 0.1:
@@ -72,13 +70,6 @@ def joy_callback(joy_msg):
         # NORMAL DRIVE
         target_right_velocity = -(vertical - horizontal) * MAX_VELOCITY
         target_left_velocity = (vertical + horizontal) * MAX_VELOCITY
-        
-    # 180° turn button
-    if turn_button == 1 and prev_turn_button == 0 and not is_turning:
-        is_turning = True
-        turn_start_time = time.time()
-        node.get_logger().info("🔄 Starting 180° turn...")
-    prev_turn_button = turn_button
 
     # Sound
     if B_button == 1 and prev_B_button == 0:
@@ -87,7 +78,7 @@ def joy_callback(joy_msg):
 
 def main(args=None):
     global target_right_velocity, target_left_velocity, node
-    global trigger, is_turning, turn_start_time
+    global trigger
     global current_right_velocity, current_left_velocity
 
 
@@ -95,8 +86,9 @@ def main(args=None):
     node = Node("six_wheel_controller")
 
     num_axes = 6
-    right_wheels = [0, 1, 2]
-    left_wheels = [3, 4, 5]
+    # Post-2026-08-12 reassembly mapping; see cmd_vel_odrive_bridge.yaml.
+    right_wheels = [0, 4, 3]
+    left_wheels = [5, 1, 2]
 
     # Setup ODrive clients and publishers
     clients = []
@@ -118,7 +110,12 @@ def main(args=None):
         req.axis_requested_state = 8
         node.get_logger().info(f"Setting odrive_axis{i} to CLOSED_LOOP_CONTROL...")
         future = client.call_async(req)
-        rclpy.spin_until_future_complete(node, future)
+        rclpy.spin_until_future_complete(node, future, timeout_sec=3.0)
+        if not future.done():
+            node.get_logger().warn(
+                f"odrive_axis{i} did not respond within timeout — skipping. "
+                f"Check that node_id={i} is powered and on the CAN bus."
+            )
         time.sleep(0.1)
 
     node.create_subscription(Joy, "/joy", joy_callback, 10)
@@ -137,17 +134,7 @@ def main(args=None):
             dt = publish_period
             
             # Determine target velocities
-            if is_turning:
-                elapsed = time.time() - turn_start_time
-                if elapsed < TURN_DURATION:
-                    target_vel_right = TURN_VELOCITY_180
-                    target_vel_left = TURN_VELOCITY_180
-                else:
-                    is_turning = False
-                    target_vel_right = 0.0
-                    target_vel_left = 0.0
-                    node.get_logger().info("✅ 180° turn complete!")
-            elif trigger == 1:
+            if trigger == 1:
                 target_vel_right = target_right_velocity
                 target_vel_left = target_left_velocity
             else:

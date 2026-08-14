@@ -10,6 +10,8 @@ from std_msgs.msg import String , Float32
 from geometry_msgs.msg import Point 
 from sensor_msgs.msg import Imu
 import math
+import os
+from pathlib import Path
 
 ''' 1 > the initial position of car known from ips sensor data  
     2 > the target here is one goal point to verfiy the pure pursuit control
@@ -26,8 +28,13 @@ postition = np.array([x_postition , y_postition ])
 
 car_yaw = 0.0
 
-# Centerline Path of CDC Practice 
-path_data = pd.read_csv('/home/autodrive_devkit/src/pure_pursuit_pkg/pure_pursuit_pkg/csv_paths_practice_cdc/Centerline_less_points.csv')
+# Centerline Path of CDC Practice
+default_path_csv = (
+    Path(__file__).resolve().parent
+    / "csv_paths_practice_cdc"
+    / "Centerline_less_points.csv"
+)
+path_data = pd.read_csv(os.environ.get("PURE_PURSUIT_PATH_CSV", default_path_csv))
 
 #x_offset = 4.71
 #y_offset = -5.03
@@ -216,4 +223,3 @@ if __name__ == "__main__" :    # the entry of the code
 
 
     main()      
-
