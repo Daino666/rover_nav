@@ -1,0 +1,10 @@
+virtual_differential:
+  ros__parameters:
+    joint_states_topic: /joint_states
+    left_joint_name:    L_Rocker_Joint
+    right_joint_name:   R_Rocker_Joint
+    left_cmd_topic:     /aries/L_Rocker_Joint/cmd_pos
+    right_cmd_topic:    /aries/R_Rocker_Joint/cmd_pos
+    cmd_rate_hz:        50.0
+    cmd_limit_deg:      18.5
+    rate_limit_deg_s:   60.0

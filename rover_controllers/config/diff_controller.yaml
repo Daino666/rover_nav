@@ -1,0 +1,53 @@
+controller_manager:
+  ros__parameters:
+    update_rate: 100
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+    rover_controller:
+      type: diff_drive_controller/DiffDriveController
+    aux_rocker_controller:                                        # ← added
+      type: forward_command_controller/ForwardCommandController   # ← added
+
+rover_controller:
+  ros__parameters:
+    type: diff_drive_controller/DiffDriveController
+    use_stamped_vel: true
+    left_wheel_names: ['L_1_Wheel_Joint', 'L_2_Wheel_Joint', 'L_3_Wheel_Joint']
+    right_wheel_names: ['R_1_Wheel_Joint', 'R_2_Wheel_Joint', 'R_3_Wheel_Joint']
+    publish_rate: 100.0
+    pose_covariance_diagonal: [0.001, 0.001, 1.0e-3, 1.0e-3, 1.0e-3, 0.01]
+    twist_covariance_diagonal: [0.001, 0.001, 1.0e-3, 1.0e-3, 1.0e-3, 0.01]
+    wheel_separation: 0.728
+    wheel_radius: 0.110
+    left_wheel_radius_multiplier: 0.9
+    right_wheel_radius_multiplier: 0.9
+    wheel_separation_multiplier: 1.2
+    cmd_vel_timeout: 0.25
+    base_frame_id: base_footprint
+    publish_limited_velocity: true
+    publish_wheel_data: true
+    enable_odom_tf: false
+    linear:
+      x:
+        has_velocity_limits: true
+        min_velocity: -4.5 ##1.27
+        max_velocity: 4.5
+        has_acceleration_limits: true
+        min_acceleration: -3.0
+        max_acceleration: 3.0
+        has_jerk_limits: false
+    angular:
+      z:
+        has_velocity_limits: true
+        min_velocity: -2.8  ##3.81
+        max_velocity: 2.8
+        has_acceleration_limits: true
+        min_acceleration: -1.5
+        max_acceleration: 1.5
+        has_jerk_limits: false
+# aux_rocker_controller:                  # ← added
+#   ros__parameters:
+#     joints:
+#       - aux_L_Rocker_joint              # index 0 → th_l_cmd from virtual_diff
+#       - aux_R_Rocker_joint              # index 1 → th_r_cmd from virtual_diff
+#     interface_name: position

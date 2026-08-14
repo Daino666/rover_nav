@@ -1,0 +1,15 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>rover_nav</name>
+  <version>0.0.1</version>
+  <description>EKF localisation config for the rover (sim-only trimmed copy: real-hardware teleop/odometry scripts, which depend on odrive_can, were dropped)</description>
+  <maintainer email="daino@todo.todo">daino</maintainer>
+  <license>MIT</license>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>rosidl_default_generators</buildtool_depend>
+  <exec_depend>rosidl_default_runtime</exec_depend>
+  <member_of_group>rosidl_interface_packages</member_of_group>
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
