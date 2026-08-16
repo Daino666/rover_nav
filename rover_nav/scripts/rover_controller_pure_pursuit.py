@@ -176,8 +176,14 @@ def joy_callback(joy_msg):
         target_left_velocity  =  (vertical + horizontal) * MAX_VELOCITY
 
 # ═══════════════════════════════════════════════════════════════
-# PURE PURSUIT
+# PURE PURSUIT WITH OBSTACLE AVOIDANCE
 # ═══════════════════════════════════════════════════════════════
+
+active_obstacles = []
+
+def obstacles_callback(msg):
+    global active_obstacles
+    active_obstacles = msg.obstacles
 
 def pursuit_control():
     global current_target_idx
@@ -201,14 +207,31 @@ def pursuit_control():
         lookahead_point = path[-1]
 
     local_x, local_y = point_global_to_local(lookahead_point, car_yaw, car_global_axis)
-    curvature = float(np.clip(calc_curv(local_x, local_y), -MAX_CURVATURE, MAX_CURVATURE))
 
-    angular     = curvature * BASE_VELOCITY
-    v_right_mps = BASE_VELOCITY + angular * (TRACK_WIDTH / 2)
-    v_left_mps  = BASE_VELOCITY - angular * (TRACK_WIDTH / 2)
+    # Evaluate 3D Obstacle Avoidance
+    speed_scale = 1.0
+    for obs in active_obstacles:
+        dist_obs = math.sqrt(obs.x**2 + obs.y**2)
+        if obs.x > 0.0 and dist_obs < (LA * 1.5):
+            safety = 0.35 + obs.radius + 0.25
+            if abs(obs.y) < safety:
+                side = 1.0 if obs.y <= 0.0 else -1.0
+                local_y += (safety - abs(obs.y) + 0.15) * side
+                local_x = max(0.3, local_x)
+            if dist_obs < 0.55:
+                return 0.0, 0.0
+            elif dist_obs < 1.8:
+                speed_scale = min(speed_scale, max(0.25, (dist_obs - 0.55) / 1.25))
+
+    curvature = float(np.clip(calc_curv(local_x, local_y), -MAX_CURVATURE, MAX_CURVATURE))
+    effective_v = BASE_VELOCITY * speed_scale
+
+    angular     = curvature * effective_v
+    v_right_mps = effective_v + angular * (TRACK_WIDTH / 2)
+    v_left_mps  = effective_v - angular * (TRACK_WIDTH / 2)
 
     node.get_logger().info(
-        f"pos: {car_global_axis} | target: {lookahead_point} | curv: {curvature:.3f}",
+        f"pos: {car_global_axis} | target: {lookahead_point} | curv: {curvature:.3f} | scale: {speed_scale:.2f}",
         throttle_duration_sec=0.5
     )
 

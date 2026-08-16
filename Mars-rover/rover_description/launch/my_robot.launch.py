@@ -87,7 +87,7 @@ def generate_launch_description():
 
     spawn_x_arg = DeclareLaunchArgument('spawn_x', default_value='0.0', description='Spawn X')
     spawn_y_arg = DeclareLaunchArgument('spawn_y', default_value='0.0', description='Spawn Y')
-    spawn_z_arg = DeclareLaunchArgument('spawn_z', default_value='2.50', description='Spawn Z')
+    spawn_z_arg = DeclareLaunchArgument('spawn_z', default_value='0.30', description='Spawn Z')
     # S1 is the coordinate-system origin (0,0) and the Mars Yard's local Y axis
     # is "forward into the yard" (S1->S2 calibration direction); yaw the spawn
     # 90 deg so the rover's body +X (forward) faces +Y instead of +X.
@@ -146,12 +146,14 @@ def generate_launch_description():
         value=gz_sim_system_plugin_path_value
     )
 
-    set_nvidia_prime = SetEnvironmentVariable(name='__NV_PRIME_RENDER_OFFLOAD', value='1')
-    set_nvidia_glx   = SetEnvironmentVariable(name='__GLX_VENDOR_LIBRARY_NAME', value='nvidia')
-    set_nvidia_egl   = SetEnvironmentVariable(
-        name='__EGL_VENDOR_LIBRARY_FILENAMES',
-        value='/usr/share/glvnd/egl_vendor.d/10_nvidia.json'
-    )
+    has_nvidia = os.path.exists('/usr/share/glvnd/egl_vendor.d/10_nvidia.json')
+    nvidia_env_actions = []
+    if has_nvidia:
+        nvidia_env_actions = [
+            SetEnvironmentVariable(name='__NV_PRIME_RENDER_OFFLOAD', value='1'),
+            SetEnvironmentVariable(name='__GLX_VENDOR_LIBRARY_NAME', value='nvidia'),
+            SetEnvironmentVariable(name='__EGL_VENDOR_LIBRARY_FILENAMES', value='/usr/share/glvnd/egl_vendor.d/10_nvidia.json'),
+        ]
 
     # ------------------------------------------------------------------
     # Robot description from xacro
@@ -222,6 +224,12 @@ def generate_launch_description():
     # Gazebo ↔ ROS2 bridge  (sim only)
     # ------------------------------------------------------------------
 
+    # NOTE: Gazebo's /clock topic transiently jumps backward in time during world
+    # loading and physics reset. Delaying the bridge by 6 s lets the simulation
+    # clock settle before any use_sim_time node (EKF, costmap, PCL filters, RViz)
+    # receives its first clock tick. Without this delay, every node detects
+    # "jump back in time" during the first second of startup and clears its TF
+    # buffer, resetting localization and the costmap.
     parameter_bridge_node = Node(
         package='ros_gz_bridge',
         executable='parameter_bridge',
@@ -230,6 +238,11 @@ def generate_launch_description():
             'config_file': gazebo_config_path,
             'use_sim_time': use_sim_time
         }],
+        condition=IfCondition(use_sim)
+    )
+    delayed_bridge = TimerAction(
+        period=6.0,
+        actions=[parameter_bridge_node],
         condition=IfCondition(use_sim)
     )
 
@@ -320,6 +333,22 @@ def generate_launch_description():
     )
 
     # ------------------------------------------------------------------
+    # IMU restamp (sim only) — the Gazebo IMU sensor bridges in as raw
+    # "/imu" with all-zero covariance, which makes robot_localization's
+    # EKF lock up after a few updates (see imu_restamp.py docstring).
+    # Republishes fixed-covariance data on "/imu/synced" for the EKF.
+    # ------------------------------------------------------------------
+
+    imu_restamp_node = Node(
+        package='rover_description',
+        executable='imu_restamp.py',
+        name='imu_restamp',
+        output='screen',
+        parameters=[{'use_sim_time': use_sim_time}],
+        condition=IfCondition(use_sim)
+    )
+
+    # ------------------------------------------------------------------
     # Joystick + teleop
     # ------------------------------------------------------------------
 
@@ -383,22 +412,10 @@ def generate_launch_description():
     # actually publishes wheel odom on /rover_controller/odom and IMU on
     # /imu/synced (see imu_restamp.py) -- remap EKF's inputs to match instead
     # of duplicating/forking ekf_config.yaml.
-    #
-    # publish_tf is forced False here (overriding ekf_config.yaml): with it on,
-    # ekf_filter_node both broadcasts odom->base_link AND runs its own internal
-    # tf2 TransformListener (needed to resolve the IMU's static frame offset),
-    # so it ends up consuming its own broadcast. That self-referential loop
-    # produced constant "jump back in time, clearing TF buffer" warnings and
-    # silently stalled position integration -- /odometry/filtered stayed frozen
-    # at (0,0,0) even while the rover was actively driving. Verified by testing
-    # in isolation: with publish_tf:true, 0 position change after driving vs.
-    # correctly reaching (1.01, -0.22) after the same drive with it off, and
-    # the "jump back" warnings went from continuous to zero. The filter itself
-    # (velocity/orientation fusion into /odometry/filtered) works correctly;
-    # only the TF broadcast was the problem. If something downstream needs the
-    # odom->base_link TF (e.g. Nav2, RViz), broadcast it from a separate node
-    # that only reads /odometry/filtered -- a plain publisher with no internal
-    # listener of its own won't hit this loop.
+    # publish_tf is forced False here: odom_tf_broadcaster (launched from
+    # obstacle_nav_gazebo.launch.py) handles map→odom and odom→base_footprint.
+    # Letting EKF publish_tf=True creates a self-consuming TF listener loop that
+    # causes "jump back in time" errors and stalls position integration.
     ekf_node = Node(
         package='robot_localization',
         executable='ekf_node',
@@ -427,10 +444,8 @@ def generate_launch_description():
 
         # Environment
         set_gz_sim_plugin_path,
-        set_nvidia_prime,
-        set_nvidia_glx,
-        set_nvidia_egl,
         set_gz_sim_resource_path,
+        *nvidia_env_actions,
 
         # Robot description + TF
         robot_state_publisher_node,
@@ -438,9 +453,10 @@ def generate_launch_description():
         # --- Simulation only ---
         gazebo_launch,
         TimerAction(period=10.0, actions=[spawn_robot_node], condition=IfCondition(use_sim)),
-        parameter_bridge_node,
+        delayed_bridge,
         delay_controllers_after_spawn,
         virtual_differential_node,
+        imu_restamp_node,
 
         # --- Real robot only ---
         ros2_control_node,

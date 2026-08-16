@@ -29,7 +29,7 @@
 
     <!-- Camera body, with origin at bottom screw mount -->
     <joint name="camera_joint" type="fixed">
-        <origin xyz="0.2756 0.0025 0.2535" rpy="0 0 0"/>
+        <origin xyz="0.245 0 0.225" rpy="0 0 0"/>
         <parent link="base_link"/>
         <child link="camera_bottom_screw_frame"/>
     </joint>
@@ -186,7 +186,7 @@
                 <update_rate>15</update_rate>
                 <visualize>false</visualize>
                 <topic>camera/color/image_raw</topic>
-                <gz_frame_id>camera_color_optical_frame</gz_frame_id>
+                <gz_frame_id>camera_color_frame</gz_frame_id>
             </sensor>
 
             <!-- The infra1/infra2 render sensors were removed from simulation:
@@ -205,19 +205,19 @@
                     </image>
                     <clip>
                         <near>0.1</near>
-                        <far>100</far>
+                        <far>3.5</far>
                     </clip>
                     <noise>
                         <type>gaussian</type>
                         <mean>0.0</mean>
-                        <stddev>0.100</stddev>
+                        <stddev>0.005</stddev>
                     </noise>
                 </camera>
                 <always_on>1</always_on>
                 <update_rate>15</update_rate>
                 <visualize>false</visualize>
                 <topic>camera/depth/image_rect_raw</topic>
-                <gz_frame_id>camera_depth_optical_frame</gz_frame_id>
+                <gz_frame_id>camera_depth_frame</gz_frame_id>
             </sensor>
 
             <!-- IMU Sensor -->
@@ -279,7 +279,7 @@
                     </linear_acceleration>
                 </imu>
                 <topic>camera/imu/data</topic>
-                <gz_frame_id>camera_gyro_optical_frame</gz_frame_id>
+                <gz_frame_id>camera_gyro_frame</gz_frame_id>
             </sensor>
         </gazebo>
     </xacro:if>

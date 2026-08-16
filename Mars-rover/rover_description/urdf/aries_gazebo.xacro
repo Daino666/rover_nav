@@ -152,20 +152,9 @@
     
   </gazebo>
 
-  <!-- Gazebo Plugin for Joint State Publisher -->
-  <!-- When ros2_control is active (use_sim=true), only publish passive joints not managed by
-       joint_state_broadcaster. Wheel and aux joints are published by ros2_control instead. -->
-  <xacro:if value="$(arg use_sim)">
-    <gazebo>
-      <plugin filename="gz-sim-joint-state-publisher-system" name="gz::sim::systems::JointStatePublisher">
-        <topic>/joint_states</topic>
-        <joint_name>L_Rocker_Joint</joint_name>
-        <joint_name>R_Rocker_Joint</joint_name>
-        <joint_name>L_Boggie_Joint</joint_name>
-        <joint_name>R_Boggie_Joint</joint_name>
-      </plugin>
-    </gazebo>
-  </xacro:if>
+  <!-- Gazebo Plugin for Joint State Publisher (Only needed if ros2_control is not used) -->
+  <!-- When ros2_control is active (use_sim=true), gz_ros2_control's joint_state_broadcaster
+       publishes ALL joint states (wheels, suspension, rockers) in a single synchronized message. -->
   <xacro:unless value="$(arg use_sim)">
     <gazebo>
       <plugin filename="gz-sim-joint-state-publisher-system" name="gz::sim::systems::JointStatePublisher">
@@ -343,19 +332,6 @@
           <gz_frame_id>imu_frame</gz_frame_id>
           <visualize>true</visualize>
           <topic>/imu</topic>
-          <!-- Without this, gz-sim's IMU zeroes yaw relative to whatever
-               orientation the model had when the sensor was instantiated
-               (spawn-relative), not true world orientation: roll/pitch
-               stay gravity-referenced (correct) but yaw silently drifts off
-               by however much the spawn pose was rotated (spawn_yaw in
-               my_robot.launch.py), which fed a wrong heading into the EKF
-               and desynced RViz's displayed orientation from Gazebo's real
-               one. Forcing world-fixed ENU makes yaw absolute. -->
-          <imu>
-              <orientation_reference_frame>
-                  <localization>ENU</localization>
-              </orientation_reference_frame>
-          </imu>
       </sensor>
   </gazebo>
 
@@ -370,12 +346,7 @@
         <right_joint>R_1_Wheel_Joint</right_joint>
         <right_joint>R_2_Wheel_Joint</right_joint>
         <right_joint>R_3_Wheel_Joint</right_joint>
-        <!-- True geometric track width from URDF forward kinematics (see
-             rover_controllers/config/diff_controller.yaml), was 0.45 which
-             didn't match the actual robot geometry. This plugin is inactive
-             under the default launch (use_sim:=true uses ros2_control
-             instead), but kept correct in case it's ever re-enabled. -->
-        <wheel_separation>0.7095</wheel_separation>
+        <wheel_separation>0.45</wheel_separation>
         <wheel_radius>0.1100</wheel_radius>
         <frame_id>odom</frame_id>
         <topic>/model/aries/cmd_vel</topic>

@@ -61,7 +61,7 @@
         <visual>
             <origin xyz="0 0 0" rpy="0 0 0" />
             <geometry>
-                <mesh filename="${mesh_location}/L_Rod_link.stl" />
+                <mesh filename="${mesh_location}/R_Rod_link.stl" />
             </geometry>
             <material name="">
                 <color rgba="0.650980392156863 0.619607843137255 0.588235294117647 1" />
@@ -70,7 +70,7 @@
         <collision>
             <origin xyz="0 0 0" rpy="0 0 0" />
             <geometry>
-                <mesh filename="${mesh_location}/L_Rod_link.stl" />
+                <mesh filename="${mesh_location}/R_Rod_link.stl" />
             </geometry>
         </collision>
     </link>
@@ -172,7 +172,7 @@
         <visual>
             <origin xyz="0 0 0" rpy="0 0 0" />
             <geometry>
-                <mesh filename="${mesh_location}/R_Rod_link.stl" />
+                <mesh filename="${mesh_location}/L_Rod_link.stl" />
             </geometry>
             <material name="">
                 <color rgba="0.898039215686275 0.898039215686275 0.898039215686275 1" />
@@ -181,7 +181,7 @@
         <collision>
             <origin xyz="0 0 0" rpy="0 0 0" />
             <geometry>
-                <mesh filename="${mesh_location}/R_Rod_link.stl" />
+                <mesh filename="${mesh_location}/L_Rod_link.stl" />
             </geometry>
         </collision>
     </link>

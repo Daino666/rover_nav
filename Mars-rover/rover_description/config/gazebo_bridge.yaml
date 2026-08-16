@@ -4,19 +4,30 @@
   gz_type_name: "gz.msgs.Clock"
   direction: GZ_TO_ROS
 
-- ros_topic_name: "/joint_states"
-  gz_topic_name: "/joint_states"
-  ros_type_name: "sensor_msgs/msg/JointState"
-  gz_type_name: "gz.msgs.Model"
-  direction: GZ_TO_ROS
+# Joint states: gz_ros2_control's joint_state_broadcaster publishes all 12 joints
+# (wheels, rockers, bogies, aux) directly to ROS /joint_states with unified timestamps.
+# Bridging Gazebo's /joint_states creates duplicate conflicting messages with out-of-sync
+# timestamps, causing robot_state_publisher time jumps and RViz 3D model glitching.
+# - ros_topic_name: "/joint_states"
+#   gz_topic_name: "/joint_states"
+#   ros_type_name: "sensor_msgs/msg/JointState"
+#   gz_type_name: "gz.msgs.Model"
+#   direction: GZ_TO_ROS
 
 
 
-- ros_topic_name: "/tf"
-  gz_topic_name: "/model/aries/tf"
-  ros_type_name: "tf2_msgs/msg/TFMessage"
-  gz_type_name: "gz.msgs.Pose_V"
-  direction: GZ_TO_ROS
+# Gazebo's OdometryPublisher plugin also broadcasts odom->base_footprint on
+# /model/aries/tf (ground-truth sim pose). Bridging it onto ROS /tf collides
+# with odom_tf_broadcaster.py, which publishes the same edge from the
+# EKF-filtered /odometry/filtered. Two unsynchronized publishers for the same
+# TF edge causes constant "jump back in time" TF buffer resets in every
+# consumer (EKF, costmap, smoother, PCL filters), stalling localization and
+# breaking the map<->robot transform. Bridge left disabled intentionally.
+# - ros_topic_name: "/tf"
+#   gz_topic_name: "/model/aries/tf"
+#   ros_type_name: "tf2_msgs/msg/TFMessage"
+#   gz_type_name: "gz.msgs.Pose_V"
+#   direction: GZ_TO_ROS
 
 
 - ros_topic_name: "/cmd_vel"
@@ -25,8 +36,11 @@
   gz_type_name: "gz.msgs.Twist"
   direction: ROS_TO_GZ
 
-# IMU data
-- ros_topic_name: "/imu/synced"
+# IMU data. Bridged as raw "/imu" (not "/imu/synced" directly) so it passes
+# through imu_restamp.py first -- Gazebo's IMU sensor reports all-zero
+# covariance, which makes robot_localization's EKF lock up (see
+# imu_restamp.py docstring); imu_restamp.py fixes that before EKF sees it.
+- ros_topic_name: "/imu"
   gz_topic_name: "/imu"
   ros_type_name: "sensor_msgs/msg/Imu"
   gz_type_name: "gz.msgs.IMU"
@@ -71,29 +85,35 @@
   gz_type_name:   "gz.msgs.Double"
   direction:      ROS_TO_GZ
 
-- ros_topic_name: "/zed/left/image_rect_color"
-  gz_topic_name:  "/zed/left/image_rect_color"
+# D435i camera (Gazebo topic names verified live via `gz topic -l`)
+- ros_topic_name: "/camera/color/image_raw"
+  gz_topic_name:  "/camera/color/image_raw"
   ros_type_name:  "sensor_msgs/msg/Image"
   gz_type_name:   "gz.msgs.Image"
   direction:      GZ_TO_ROS
 
-
-- ros_topic_name: "/zed/left/camera_info"
-  gz_topic_name:  "/zed/left/camera_info"
+- ros_topic_name: "/camera/color/camera_info"
+  gz_topic_name:  "/camera/color/camera_info"
   ros_type_name:  "sensor_msgs/msg/CameraInfo"
   gz_type_name:   "gz.msgs.CameraInfo"
   direction:      GZ_TO_ROS
 
-- ros_topic_name: "/zed/depth/camera_info"
-  gz_topic_name:  "/zed/depth/camera_info"
-  ros_type_name:  "sensor_msgs/msg/CameraInfo"
-  gz_type_name:   "gz.msgs.CameraInfo"
-  direction:      GZ_TO_ROS
-
-- ros_topic_name: "/zed/depth/depth_registered"
-  gz_topic_name:  "/zed/depth/depth_registered"
+- ros_topic_name: "/camera/depth/image_rect_raw"
+  gz_topic_name:  "/camera/depth/image_rect_raw"
   ros_type_name:  "sensor_msgs/msg/Image"
   gz_type_name:   "gz.msgs.Image"
+  direction:      GZ_TO_ROS
+
+- ros_topic_name: "/camera/depth/camera_info"
+  gz_topic_name:  "/camera/depth/camera_info"
+  ros_type_name:  "sensor_msgs/msg/CameraInfo"
+  gz_type_name:   "gz.msgs.CameraInfo"
+  direction:      GZ_TO_ROS
+
+- ros_topic_name: "/camera/depth/points"
+  gz_topic_name:  "/camera/depth/image_rect_raw/points"
+  ros_type_name:  "sensor_msgs/msg/PointCloud2"
+  gz_type_name:   "gz.msgs.PointCloudPacked"
   direction:      GZ_TO_ROS
 
 

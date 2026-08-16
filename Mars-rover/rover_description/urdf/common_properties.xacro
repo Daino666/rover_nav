@@ -32,7 +32,7 @@
     <xacro:property name="enable_lidar" value="false"/>
 
     <!-- Enable D435i -->
-    <xacro:property name="enable_D435i" value="false"/>
+    <xacro:property name="enable_D435i" value="true"/>
 
     <!-- Enable ZED 2i -->
     <xacro:property name="enable_zed2i" value="true"/>

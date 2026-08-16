@@ -15,6 +15,27 @@
         <plugin>gz_ros2_control/GazeboSimSystem</plugin>
       </hardware>
 
+      <!-- PASSIVE SUSPENSION JOINTS (read-only state interfaces for unified joint_states) -->
+      <joint name="L_Rocker_Joint">
+        <state_interface name="position"/>
+        <state_interface name="velocity"/>
+      </joint>
+
+      <joint name="R_Rocker_Joint">
+        <state_interface name="position"/>
+        <state_interface name="velocity"/>
+      </joint>
+
+      <joint name="L_Boggie_Joint">
+        <state_interface name="position"/>
+        <state_interface name="velocity"/>
+      </joint>
+
+      <joint name="R_Boggie_Joint">
+        <state_interface name="position"/>
+        <state_interface name="velocity"/>
+      </joint>
+
       <!-- ROCKER JOINTS -->
       <joint name="aux_L_Rocker_joint">
         <command_interface name="position"/>

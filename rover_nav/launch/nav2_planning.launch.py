@@ -33,6 +33,8 @@ Usage:
   ros2 launch rover_nav nav2_planning.launch.py rviz:=true static_tf:=false
 """
 
+import os
+
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.conditions import IfCondition
@@ -48,7 +50,14 @@ def generate_launch_description():
     rviz_config = PathJoinSubstitution([
         FindPackageShare('rover_nav'), 'rviz', 'nav2_path_view.rviz'
     ])
+    default_map_file = PathJoinSubstitution([
+        FindPackageShare('rover_nav'), 'maps', 'marsyard2026_occupancy.yaml'
+    ])
 
+    map_arg = DeclareLaunchArgument(
+        'map', default_value=default_map_file,
+        description='Full path to the occupancy map yaml file',
+    )
     rviz_arg = DeclareLaunchArgument(
         'rviz', default_value='false',
         description='Also launch RViz pre-configured to show the map + planned paths live',
@@ -64,7 +73,7 @@ def generate_launch_description():
         executable='map_server',
         name='map_server',
         output='screen',
-        parameters=[params_file],
+        parameters=[params_file, {'yaml_filename': LaunchConfiguration('map')}],
     )
 
     planner_server_node = Node(
@@ -101,7 +110,18 @@ def generate_launch_description():
         executable='static_transform_publisher',
         name='map_to_base_footprint_static',
         output='screen',
-        arguments=['0', '0', '0', '0', '0', '0', 'map', 'base_footprint'],
+        arguments=['--x', '0', '--y', '0', '--z', '0', '--yaw', '0', '--pitch', '0', '--roll', '0',
+                   '--frame-id', 'map', '--child-frame-id', 'base_footprint'],
+        condition=IfCondition(LaunchConfiguration('static_tf')),
+    )
+
+    static_tf_base_link_node = Node(
+        package='tf2_ros',
+        executable='static_transform_publisher',
+        name='base_footprint_to_base_link_static',
+        output='screen',
+        arguments=['--x', '0', '--y', '0', '--z', '0', '--yaw', '0', '--pitch', '0', '--roll', '0',
+                   '--frame-id', 'base_footprint', '--child-frame-id', 'base_link'],
         condition=IfCondition(LaunchConfiguration('static_tf')),
     )
 
@@ -115,9 +135,11 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
+        map_arg,
         rviz_arg,
         static_tf_arg,
         static_tf_node,
+        static_tf_base_link_node,
         map_server_node,
         planner_server_node,
         smoother_server_node,

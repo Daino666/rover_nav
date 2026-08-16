@@ -90,7 +90,7 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_HEIGHTMAP = os.path.join(
     REPO_ROOT, "rover_description", "models", "dem", "marsyard2026_terrain_hm.tif"
 )
-DEFAULT_OUT_DIR = os.path.expanduser("~/jazzy_ws/src/marsyard")
+DEFAULT_OUT_DIR = os.path.abspath(os.path.join(REPO_ROOT, "..", "marsyard"))
 DEFAULT_COORDS = os.path.join(
     DEFAULT_OUT_DIR, "2026_MarsYard_3D_Model-20260812T165935Z-1-001",
     "2026_MarsYard_3D_Model", "Coordinates_MarsYard2026.txt",

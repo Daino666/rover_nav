@@ -47,7 +47,10 @@ RETURN_TO_START = True
 # End of parameters. Nothing below this line needs editing for normal use.
 # ============================================================================
 
-DEFAULT_OUT_DIR = os.path.expanduser("~/jazzy_ws/src/marsyard")
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+DEFAULT_OUT_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, "..", "..", "marsyard"))
+ROVER_NAV_MAPS = os.path.abspath(os.path.join(SCRIPT_DIR, "..", "..", "rover_nav", "maps"))
+
 DEFAULT_COORDS = os.path.join(
     DEFAULT_OUT_DIR, "2026_MarsYard_3D_Model-20260812T165935Z-1-001",
     "2026_MarsYard_3D_Model", "Coordinates_MarsYard2026.txt",
@@ -150,25 +153,43 @@ def save_preview(route_labels, route_xy, path_world, survey_points, out_viz):
 
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="Plan a continuous multi-point tour using Nav2.")
+    parser.add_argument("--start", default=START, help="Starting survey point or x,y tuple")
+    parser.add_argument("--points", nargs="*", default=POINTS, help="Survey points to visit (e.g. W6 W5 W7 W8)")
+    parser.add_argument("--no-loop", action="store_true", help="Do not return to start at the end")
+    parser.add_argument("--use-sim-time", type=lambda x: (str(x).lower() in ['true', '1', 'yes']), default=True, help="Use simulation time (default: True)")
+    parsed_args, _ = parser.parse_known_args()
+
+    start_arg = parsed_args.start
+    points_arg = parsed_args.points
+    return_to_start = not parsed_args.no_loop
+    use_sim = parsed_args.use_sim_time
+
     survey_points = load_survey_points(DEFAULT_COORDS)
-    start_label, start_xy = resolve(START, survey_points)
-    to_visit = [resolve(p, survey_points) for p in POINTS]
+    start_label, start_xy = resolve(start_arg, survey_points)
+    to_visit = [resolve(p, survey_points) for p in points_arg]
 
     print(f"start: {start_label} {start_xy}")
     print(f"points to visit (unordered): {[l for l, _ in to_visit]}")
 
     ordered = nearest_neighbor_order(start_xy, to_visit)
-    if RETURN_TO_START:
+    if return_to_start:
         ordered = ordered + [(start_label, start_xy)]
 
     route_labels = [start_label] + [l for l, _ in ordered]
     print("nearest-neighbor route: " + " -> ".join(route_labels))
 
-    rclpy.init()
+    rclpy_args = ['--ros-args', '-p', 'use_sim_time:=true'] if use_sim else []
+    rclpy.init(args=rclpy_args)
     nav = BasicNavigator()
 
     start_pose = to_pose(start_xy)
     goal_poses = [to_pose(xy) for _, xy in ordered]
+
+    print("waiting for Nav2 planner_server action server...")
+    if not nav.compute_path_through_poses_client.wait_for_server(timeout_sec=10.0):
+        print("⚠️ Warning: compute_path_through_poses action server did not respond within 10s. Trying to query anyway...")
 
     print(f"requesting one continuous path through {len(goal_poses)} points from planner_server...")
     raw = nav.getPathThroughPoses(start_pose, goal_poses, planner_id="GridBased", use_start=True)
@@ -184,14 +205,13 @@ def main():
     print(f"raw path: {len(raw.poses)} poses")
 
     print("smoothing via smoother_server...")
-    smooth = nav.smoothPath(raw, smoother_id="simple_smoother", check_for_collision=True)
-    if smooth is None:
-        print("\n*** Smoothing failed. ***")
-        nav.destroy_node()
-        rclpy.shutdown()
-        return
-    smooth_path = smooth.path if hasattr(smooth, "path") else smooth
-    print(f"smoothed path: {len(smooth_path.poses)} poses")
+    smooth = nav.smoothPath(raw, smoother_id="simple_smoother", check_for_collision=False)
+    if smooth is not None:
+        smooth_path = smooth.path if hasattr(smooth, "path") else smooth
+        print(f"smoothed path: {len(smooth_path.poses)} poses")
+    else:
+        print("⚠️ Path smoothing skipped (using high-quality raw grid path)")
+        smooth_path = raw
 
     path_world = [(p.pose.position.x, p.pose.position.y) for p in smooth_path.poses]
     length_m = sum(
@@ -205,6 +225,17 @@ def main():
         for x, y in path_world:
             f.write(f"{x:.3f},{y:.3f}\n")
     print("waypoints:", OUT_WAYPOINTS)
+
+    if os.path.exists(ROVER_NAV_MAPS):
+        rover_nav_wp = os.path.join(ROVER_NAV_MAPS, "marsyard2026_tour_waypoints.csv")
+        try:
+            with open(rover_nav_wp, "w") as f:
+                f.write("x,y\n")
+                for x, y in path_world:
+                    f.write(f"{x:.3f},{y:.3f}\n")
+            print("synced to package:", rover_nav_wp)
+        except Exception:
+            pass
 
     save_preview(route_labels, [(start_label, start_xy)] + ordered, path_world, survey_points, OUT_VIZ)
     print("preview:", OUT_VIZ)

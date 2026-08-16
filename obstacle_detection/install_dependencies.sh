@@ -3,7 +3,8 @@
 # Review before running -- this uses sudo for system package installs.
 set -e
 
-WS_DIR="$HOME/jazzy_ws"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+WS_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 echo "=== Updating apt package lists ==="
 sudo apt-get update

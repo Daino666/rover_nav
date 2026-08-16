@@ -38,7 +38,7 @@ ros2 run rtabmap_odom rgbd_odometry \
 ros2 launch aries_imu imu.launch.py
 
 
-ros2 run robot_localization ekf_node --ros-args --params-file ~/colcon_ws/src/rover_nav/config/ekf_config.yaml
+ros2 run robot_localization ekf_node --ros-args --params-file $(ros2 pkg prefix rover_nav)/share/rover_nav/config/ekf_config.yaml
 
 
 

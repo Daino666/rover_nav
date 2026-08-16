@@ -3,7 +3,6 @@
 
 
 
-
     <!-- Right Rocker Link -->
     <link name="R_Rocker_Link">
         <inertial>
@@ -20,21 +19,25 @@
         <visual>
             <origin xyz="0 0 0" rpy="0 0 0"/>
             <geometry>
-                <mesh filename="${mesh_location}/R_Rocker_Link.STL"/>
+                <mesh filename="${mesh_location}/right_rocker.stl"/>
             </geometry>
             <material name="silver"/>
         </visual>
         <collision>
-            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <!-- Box proxy, not the hi-poly visual mesh: a 34k-triangle concave
+                 mesh as direct collision geometry destabilizes the physics
+                 solver on this closed rocker-bogie-differential loop
+                 (observed as a wheel getting yanked on ground contact). -->
+            <origin xyz="-0.0022 -0.0625 0.0224" rpy="0 0 0"/>
             <geometry>
-                <mesh filename="${mesh_location}/R_Rocker_Link.STL"/>
+                <box size="0.5044 0.2750 0.0790"/>
             </geometry>
         </collision>
     </link>
 
     <!-- Right Rocker Joint -->
     <joint name="R_Rocker_Joint" type="revolute">
-        <origin xyz="0 -0.271 0.070999999999999" rpy="${PI/2} 0 ${PI}"/>
+        <origin xyz="0 -0.2842 0.070999999999999" rpy="${PI/2} 0 ${PI}"/>
         <parent link="base_link"/>
         <child link="R_Rocker_Link"/>
         <axis xyz="0 0 -1"/>
@@ -47,10 +50,10 @@
 
     
 
-    <!-- Right Wheel 3 -->
-    <link name="R_3_Wheel_Link">
+    <!-- Right Wheel 1 -->
+    <link name="R_1_Wheel_Link">
         <inertial>
-            <origin xyz="0 0.0350608778434713 0" rpy="-1.57 0 0"/>
+            <origin xyz="0 0.0350608778434713 0" rpy="${PI/2} 0 ${PI}"/>
             <mass value="${wheel_mass}"/>
             <inertia
                 ixx="0.00914288966451803"
@@ -60,34 +63,38 @@
                 iyz="0"
                 izz="0.0160987749043434"/>
             </inertial>
+            
         <visual>
-            <origin xyz="0 0 0" rpy="-1.57 0 0"/>
+            <origin xyz="0 0 0" rpy="${PI/2} 0 ${PI}"/>
             <geometry>
-                <mesh filename="${mesh_location}/R_3_Wheel_Link.STL"/>
+                <mesh filename="${mesh_location}/R_1_Wheel_Link.STL"/>
             </geometry>
             <material name="blue"/>
         </visual>
+        
         <collision>
-            <origin xyz="0 0.035 0" rpy="-1.57 0 0"/>
+            <origin xyz="0 0.035 0" rpy="${PI/2} 0 0"/>
             <geometry>
                 <cylinder radius="${wheel_radius}" length="${wheel_thickness}"/>
             </geometry>
         </collision>
     </link>
 
-    <!-- Right Wheel 3 Joint -->
-    <joint name="R_3_Wheel_Joint" type="continuous">
-        <origin xyz="0.1542 -0.1266 -0.086" rpy=" 1.57 0 -3.14"/>
+    <joint name="R_1_Wheel_Joint" type="continuous">
+        <origin xyz="0.12754 -0.1674 -0.0953" rpy="${PI/2} 0 ${PI}"/>
+        
         <parent link="R_Boggie_Link"/>
-        <child link="R_3_Wheel_Link"/>
+        <child link="R_1_Wheel_Link"/>
+        
         <axis xyz="0 1 0"/>
+        
         <dynamics damping="0.01" friction="0.01"/>
     </joint>
 
     <!-- Right Wheel 2 -->
     <link name="R_2_Wheel_Link">
         <inertial>
-            <origin xyz="0 0.0350608778434713 0" rpy="-1.57 0 0"/>
+            <origin xyz="0 0.0350608778434713 0" rpy="${PI/2} 0 ${PI}"/>
             <mass value="${wheel_mass}"/>
             <inertia
                 ixx="0.00914288966451803"
@@ -98,14 +105,14 @@
                 izz="0.0160987749043434"/>
         </inertial>
         <visual>
-            <origin xyz="0 0 0" rpy="-1.57 0 0"/>
+            <origin xyz="0 0 0" rpy="${PI/2} 0 ${PI}"/>
             <geometry>
                 <mesh filename="${mesh_location}/R_2_Wheel_Link.STL"/>
             </geometry>
             <material name="blue"/>
         </visual>
         <collision>
-            <origin xyz="0 0.035 0" rpy="-1.57 0 0"/>
+            <origin xyz="0 0.035 0" rpy="${PI/2} 0 0"/>
             <geometry>
                 <cylinder radius="${wheel_radius}" length="${wheel_thickness}"/>
             </geometry>
@@ -114,17 +121,17 @@
 
     <!-- Right Wheel 2 Joint -->
     <joint name="R_2_Wheel_Joint" type="continuous">
-        <origin xyz="-0.1267 -0.1545 -0.086" rpy=" 1.57 0 -3.14"/>
+        <origin xyz="-0.12754 -0.1674 -0.0953" rpy="${PI/2} 0 ${PI}"/>
         <parent link="R_Boggie_Link"/>
         <child link="R_2_Wheel_Link"/>
         <axis xyz="0 1 0"/>
         <dynamics damping="0.01" friction="0.01"/>
     </joint>
 
-    <!-- Right Wheel 1 -->
-    <link name="R_1_Wheel_Link">
+    <!-- Right Wheel 3 -->
+    <link name="R_3_Wheel_Link">
         <inertial>
-            <origin xyz="0 0.0350608778434713 0" rpy="-1.57 0 0"/>
+            <origin xyz="0 0.0350608778434713 0" rpy="${PI/2} 0 ${PI}"/>
             <mass value="${wheel_mass}"/>
             <inertia
                 ixx="0.00914288966451803"
@@ -135,14 +142,14 @@
                 izz="0.0160987749043434"/>
         </inertial>
         <visual>
-            <origin xyz="0 0 0" rpy="-1.57 0 0"/>
+            <origin xyz="0 0 0" rpy="${PI/2} 0 ${PI}"/>
             <geometry>
-                <mesh filename="${mesh_location}/R_1_Wheel_Link.STL"/>
+                <mesh filename="${mesh_location}/R_3_Wheel_Link.STL"/>
             </geometry>
             <material name="blue"/>
         </visual>
         <collision>
-            <origin xyz="0 0.035 0" rpy="-1.57 0 0"/>
+            <origin xyz="0 0.035 0" rpy="${PI/2} 0 0"/>
             <geometry>
                 <cylinder radius="${wheel_radius}" length="${wheel_thickness}"/>
             </geometry>
@@ -150,10 +157,10 @@
     </link>
 
     <!-- Right Wheel 3 Joint -->
-    <joint name="R_1_Wheel_Joint" type="continuous">
-        <origin xyz="-0.276 -0.1541 -0.0760000000000001" rpy=" 1.57 0 -3.14"/>
+    <joint name="R_3_Wheel_Joint" type="continuous">
+        <origin xyz="-0.2299 -0.1602 -0.0953" rpy="${PI/2} 0 ${PI}"/>
         <parent link="R_Rocker_Link"/>
-        <child link="R_1_Wheel_Link"/>
+        <child link="R_3_Wheel_Link"/>
         <axis xyz="0 1 0"/>
         <dynamics damping="0.01" friction="0.01"/>
     </joint>
@@ -174,21 +181,22 @@
         <visual>
             <origin xyz="0 0 0" rpy="0 0 0"/>
             <geometry>
-                <mesh filename="${mesh_location}/R_Boggie_Link.STL"/>
+                <mesh filename="${mesh_location}/right_bogie.stl"/>
             </geometry>
             <material name="silver"/>
         </visual>
         <collision>
-            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <!-- Box proxy, not the hi-poly visual mesh; see rocker collision comment above. -->
+            <origin xyz="0.0002 -0.0949 0.0006" rpy="0 0 0"/>
             <geometry>
-                <mesh filename="${mesh_location}/R_Boggie_Link.STL"/>
+                <box size="0.3401 0.2299 0.0480"/>
             </geometry>
         </collision>
     </link>
 
     <!-- Right Boggie Joint -->
     <joint name="R_Boggie_Joint" type="revolute">
-        <origin xyz="0.1411 0.006899 0" rpy="0 0 0"/>
+        <origin xyz="0.195 0 0" rpy="0 0 0"/>
         <parent link="R_Rocker_Link"/>
         <child link="R_Boggie_Link"/>
         <axis xyz="0 0 -1"/>

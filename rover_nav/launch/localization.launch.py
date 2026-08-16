@@ -8,8 +8,6 @@ import os
 def generate_launch_description():
     # Get the path to the config file
     pkg_share = get_package_share_directory('rover_nav')
-    #ekf_config = os.path.join(pkg_share, 'config', '/home/daino/colcon_ws/src/rover_nav/config/ekf_config.yaml')
-    #change needed to 
     ekf_config = os.path.join(pkg_share, 'config', 'ekf_config.yaml')
     
     return LaunchDescription([

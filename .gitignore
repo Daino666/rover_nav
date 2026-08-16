@@ -3,3 +3,4 @@ __pycache__/
 build/
 install/
 log/
+Mars-rover/rover_description/models/marsyard_mesh/marsyard2026_visual.obj

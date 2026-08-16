@@ -1,0 +1,122 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+  - Class: rviz_common/Views
+    Name: Views
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Class: rviz_default_plugins/Grid
+      Name: Grid
+      Enabled: true
+      Plane: XY
+      Cell Size: 1.0
+      Line Style: Lines
+      Color: 160; 160; 160
+    - Class: rviz_default_plugins/Map
+      Name: Mars Yard Occupancy Map
+      Topic:
+        Value: /map
+        Durability Policy: Transient Local
+      Enabled: true
+      Alpha: 0.7
+    - Class: rviz_default_plugins/Map
+      Name: Dynamic Global Costmap
+      Topic:
+        Value: /global_costmap/costmap
+        Durability Policy: Transient Local
+      Color Scheme: costmap
+      Alpha: 0.55
+      Enabled: true
+    - Class: rviz_default_plugins/PointCloud2
+      Name: 3D Camera Depth Points
+      Topic:
+        Value: /camera/depth/points
+      Size (m): 0.04
+      Style: Flat Squares
+      Color Transformer: AxisColor
+      Axis: Z
+      Enabled: true
+    - Class: rviz_default_plugins/MarkerArray
+      Name: 3D Obstacle Bounding Boxes & HUD
+      Topic:
+        Value: /obstacles/markers
+      Enabled: true
+    - Class: rviz_default_plugins/MarkerArray
+      Name: Simulated Virtual Rocks
+      Topic:
+        Value: /simulation/virtual_obstacles
+      Enabled: true
+    - Class: rviz_default_plugins/Path
+      Name: Global Planned Tour
+      Topic:
+        Value: /pure_pursuit/path
+        Durability Policy: Transient Local
+      Color: 255; 140; 0
+      Line Style: Lines
+      Line Width: 0.08
+      Enabled: true
+    - Class: rviz_default_plugins/Path
+      Name: Smoothed Nav2 Plan
+      Topic:
+        Value: /plan_smoothed
+      Color: 0; 220; 0
+      Line Style: Lines
+      Line Width: 0.06
+      Enabled: true
+    - Class: rviz_default_plugins/Path
+      Name: Dynamic Avoidance Detour
+      Topic:
+        Value: /pure_pursuit/local_avoidance_path
+      Color: 0; 220; 255
+      Line Style: Lines
+      Line Width: 0.12
+      Enabled: true
+    - Class: rviz_default_plugins/Marker
+      Name: Pure Pursuit Lookahead Target
+      Topic:
+        Value: /pure_pursuit/lookahead_marker
+      Enabled: true
+    - Class: rviz_default_plugins/RobotModel
+      Name: Rover 3D Model
+      Description Source: Topic
+      Description Topic:
+        Depth: 5
+        Durability Policy: Transient Local
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /robot_description
+      Visual Enabled: true
+      Collision Enabled: false
+      Alpha: 1.0
+      TF Prefix: ""
+      Update Interval: 0
+      Enabled: true
+    - Class: rviz_default_plugins/TF
+      Name: TF Tree
+      Show Names: false
+      Show Axes: true
+      Scale: 0.4
+      Enabled: true
+  Global Options:
+    Fixed Frame: map
+    Background Color: 30; 30; 35
+  Tools:
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Interact
+    - Class: rviz_default_plugins/FocusCamera
+    - Class: rviz_default_plugins/PublishPoint
+      Topic:
+        Value: /clicked_point
+  Value: true
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Name: Orbit View
+      Distance: 18.0
+      Pitch: 0.75
+      Yaw: 1.2
+      Focal Point:
+        X: 4.0
+        Y: 2.0
+        Z: 0.0

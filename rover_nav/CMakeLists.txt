@@ -19,7 +19,13 @@ install(
     scripts/Odom.py
     scripts/rover_controller_pure_pursuit.py
     scripts/Rover_path_controller/Pure_pursuit_Gazebo.py
+    scripts/Rover_path_controller/pcl_obstacle_detector.py
+    scripts/Rover_path_controller/obstacle_detector_node.py
+    scripts/Rover_path_controller/obstacle_avoidance.py
+    scripts/Rover_path_controller/kinematic_mock_sim.py
     scripts/odom_tf_broadcaster.py
+    scripts/lifecycle_autostart.py
+    scripts/spawn_obstacle_rocks.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
@@ -36,6 +42,11 @@ install(DIRECTORY
 
 install(DIRECTORY
   rviz
+  DESTINATION share/${PROJECT_NAME}/
+)
+
+install(DIRECTORY
+  maps
   DESTINATION share/${PROJECT_NAME}/
 )
 

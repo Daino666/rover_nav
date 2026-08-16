@@ -14,6 +14,7 @@
     <xacro:include filename="differential_link.xacro" />
     <xacro:include filename="left_link.xacro" />
     <xacro:include filename="right_link.xacro" />
+    <xacro:include filename="d435i.xacro" />
     <xacro:include filename="rover_control.xacro" />
     <!-- zed2i.xacro requires the zed_description package, which isn't
          installed on this machine yet. Disabled so the URDF can still be

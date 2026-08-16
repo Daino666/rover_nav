@@ -1,7 +1,10 @@
 map_server:
   ros__parameters:
     use_sim_time: false
-    yaml_filename: "/home/hsm/jazzy_ws/src/marsyard/marsyard2026_occupancy.yaml"
+    # NOTE: yaml_filename is overridden at launch time by the 'map' argument.
+    # This default is a fallback only — the launch files use os.path.expanduser
+    # to resolve the correct path on whatever machine the workspace is deployed on.
+    yaml_filename: "marsyard2026_occupancy.yaml"
     topic_name: "map"
     frame_id: "map"
 
@@ -11,30 +14,40 @@ global_costmap:
       use_sim_time: false
       global_frame: map
       robot_base_frame: base_footprint
+      # Rover footprint radius — determines free-space checking in planner
+      robot_radius: 0.35
       resolution: 0.1
       track_unknown_space: false
-      always_send_full_costmap: true
+      always_send_full_costmap: false
       rolling_window: false
-      # Without explicit values these can default to effectively never firing
-      # the update/publish timer on a fully-static map (no obstacle-layer
-      # updates ever trigger it otherwise) -- smoother_server's costmap
-      # subscription then never receives anything, "Costmap is not available".
-      update_frequency: 1.0
+      update_frequency: 2.0
       publish_frequency: 1.0
-      plugins: ["static_layer", "inflation_layer"]
+      plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
       static_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
         map_subscribe_transient_local: true
+      obstacle_layer:
+        plugin: "nav2_costmap_2d::ObstacleLayer"
+        enabled: true
+        observation_sources: pointcloud
+        pointcloud:
+          topic: /obstacles/points
+          max_obstacle_height: 1.5
+          min_obstacle_height: -0.20
+          obstacle_max_range: 3.5
+          obstacle_min_range: 0.15
+          raytrace_max_range: 4.0
+          raytrace_min_range: 0.15
+          clearing: true
+          marking: true
+          data_type: "PointCloud2"
+          observation_persistence: 1.0
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        # cost_scaling_factor controls how sharply cost decays away from an
-        # obstacle -- lower = cost stays elevated further out, pulling the
-        # planner's chosen path further toward the centerline of open space.
-        cost_scaling_factor: 3.0
-        # How far (m) the inflation cost gradient extends past each obstacle.
-        # Matches the scale of the corridors in this yard; tune if paths
-        # still look too close to obstacles.
-        inflation_radius: 1.0
+        # Smoother decay curve (1.8) + larger radius (0.85m) creates a natural
+        # parabolic cost trough that keeps the planned path dead-center between hills.
+        cost_scaling_factor: 1.8
+        inflation_radius: 0.45
 
 planner_server:
   ros__parameters:
@@ -42,28 +55,32 @@ planner_server:
     planner_plugins: ["GridBased"]
     GridBased:
       plugin: "nav2_smac_planner::SmacPlanner2D"
-      tolerance: 0.25
+      # Goal tolerance matching GOAL_TOLERANCE in Pure Pursuit
+      tolerance: 0.35
       downsample_costmap: false
-      allow_unknown: false
+      allow_unknown: true
       max_iterations: 1000000
       max_on_approach_iterations: 1000
       max_planning_time: 5.0
-      cost_travel_multiplier: 2.0
+      # Higher multiplier (5.0) strongly penalizes traveling close to hill slopes
+      cost_travel_multiplier: 5.0
       use_final_approach_orientation: false
 
 smoother_server:
   ros__parameters:
     use_sim_time: false
+    robot_base_frame: base_footprint
     smoother_plugins: ["simple_smoother"]
-    # smoother_server defaults to a "local_costmap" topic that doesn't exist
-    # in this planning-only stack; planner_server's internal costmap actually
-    # publishes here instead. Needed even with check_for_collision=False --
-    # smoother_server subscribes to this unconditionally at startup.
     costmap_topic: "/global_costmap/costmap_raw"
+    footprint_topic: "/global_costmap/published_footprint"
     simple_smoother:
       plugin: "nav2_smoother::SimpleSmoother"
       tolerance: 1.0e-10
       max_its: 1000
+      # w_data: weight toward original path shape (keeps path close to planned route)
+      # w_smooth: weight toward smoothness (reduces sharp corners)
+      w_data: 0.5
+      w_smooth: 0.3
       do_refinement: true
       refinement_num: 2
 
@@ -72,3 +89,5 @@ lifecycle_manager_planning:
     use_sim_time: false
     autostart: true
     node_names: ["map_server", "planner_server", "smoother_server"]
+    bond_timeout: 10.0
+    attempt_respawn_reconnection: true

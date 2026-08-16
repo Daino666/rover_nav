@@ -14,11 +14,33 @@ even while the rover is stationary.
 This node re-stamps every /imu message with the host's synced clock
 before EKF sees it. Proper fix is syncing the MCU clock in firmware
 (rmw_uros_sync_session), but that firmware lives outside this repo.
+
+It also guards against all-zero covariance matrices (the Gazebo IMU
+sensor plugin reports these in sim; some firmware/drivers do on real
+hardware too). robot_localization treats an all-zero covariance as
+near-infinite confidence: the EKF's internal covariance for that
+variable collapses toward zero after a few updates, and its outlier
+Mahalanobis-distance gate then rejects every subsequent measurement as
+an outlier -- the filter's estimate silently freezes while the real
+sensor keeps moving. Rows that come in all-zero are replaced with a
+small fixed variance so the filter keeps accepting updates.
 """
 
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Imu
+
+# Fallback variance (rad^2 or (rad/s)^2) substituted for any 3x3 orientation/
+# angular_velocity/linear_acceleration covariance block that arrives all-zero.
+DEFAULT_COVARIANCE_VALUE = 1e-3
+
+
+def _fix_covariance(covariance):
+    if all(v == 0.0 for v in covariance):
+        fixed = [0.0] * 9
+        fixed[0] = fixed[4] = fixed[8] = DEFAULT_COVARIANCE_VALUE
+        return fixed
+    return covariance
 
 
 class ImuRestamp(Node):
@@ -30,6 +52,9 @@ class ImuRestamp(Node):
 
     def imu_callback(self, msg):
         msg.header.stamp = self.get_clock().now().to_msg()
+        msg.orientation_covariance = _fix_covariance(msg.orientation_covariance)
+        msg.angular_velocity_covariance = _fix_covariance(msg.angular_velocity_covariance)
+        msg.linear_acceleration_covariance = _fix_covariance(msg.linear_acceleration_covariance)
         self.publisher.publish(msg)
 
 

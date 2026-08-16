@@ -20,15 +20,26 @@ class ObstacleFilter(Node):
 
     def __init__(self):
         super().__init__('obstacle_filter')
+        self.declare_parameter('input_topic', '/camera/camera/depth/color/points')
+        self.declare_parameter('min_range', 0.1)
+        self.declare_parameter('max_range', 3.0)
+        self.declare_parameter('depth_axis', 'auto')  # 'auto', 'x', 'z'
+
+        input_topic = self.get_parameter('input_topic').get_parameter_value().string_value
+        self.min_range = self.get_parameter('min_range').get_parameter_value().double_value
+        self.max_range = self.get_parameter('max_range').get_parameter_value().double_value
+        self.depth_axis_param = self.get_parameter('depth_axis').get_parameter_value().string_value
+
         self.sub = self.create_subscription(
             PointCloud2,
-            '/camera/camera/depth/color/points',
+            input_topic,
             self.cloud_callback,
             qos_profile_sensor_data,
         )
         self.pub = self.create_publisher(PointCloud2, '/obstacles/filtered', 10)
         self._frame_count = 0
         self._field_offsets = None
+        self.get_logger().info(f'ObstacleFilter subscribed to {input_topic}')
 
     def cloud_callback(self, msg: PointCloud2):
         t0 = time.perf_counter()
@@ -45,11 +56,24 @@ class ObstacleFilter(Node):
         count = msg.width * msg.height
         arr = np.frombuffer(msg.data, dtype=self._field_offsets, count=count)
 
-        z = arr['z']
-        # NaN comparisons are always False in numpy, so invalid/no-return
-        # points (NaN x/y/z) are dropped by this range check with no
-        # separate isnan pass needed.
-        mask = (z >= Z_MIN) & (z <= Z_MAX)
+        finite = np.isfinite(arr['x']) & np.isfinite(arr['y']) & np.isfinite(arr['z'])
+        if not np.any(finite):
+            return
+
+        # Determine depth axis if auto
+        depth_axis = self.depth_axis_param
+        if depth_axis == 'auto':
+            if 'optical' in msg.header.frame_id:
+                depth_axis = 'z'
+            else:
+                # Body frame or standard camera frame: check which axis is positive forward
+                if np.nanmax(arr['x'][finite]) > 0.5 and np.nanmax(arr['z'][finite]) <= 0.1:
+                    depth_axis = 'x'
+                else:
+                    depth_axis = 'z'
+
+        d = arr[depth_axis]
+        mask = finite & (d >= self.min_range) & (d <= self.max_range)
         n_kept = int(mask.sum())
         if n_kept == 0:
             return
@@ -57,14 +81,14 @@ class ObstacleFilter(Node):
         filtered = np.empty((n_kept, 3), dtype=np.float32)
         filtered[:, 0] = arr['x'][mask]
         filtered[:, 1] = arr['y'][mask]
-        filtered[:, 2] = z[mask]
+        filtered[:, 2] = arr['z'][mask]
 
         self._frame_count += 1
         if self._frame_count % 30 == 0:
             elapsed_ms = (time.perf_counter() - t0) * 1000
             self.get_logger().info(
-                f'kept {n_kept}/{count} pts, z range [{filtered[:, 2].min():.2f}, '
-                f'{filtered[:, 2].max():.2f}], {elapsed_ms:.1f} ms/frame'
+                f'kept {n_kept}/{count} pts ({depth_axis}-axis [{self.min_range:.2f}, {self.max_range:.2f}]), '
+                f'{elapsed_ms:.1f} ms/frame'
             )
 
         out_msg = PointCloud2()
@@ -83,7 +107,10 @@ class ObstacleFilter(Node):
 def main(args=None):
     rclpy.init(args=args)
     node = ObstacleFilter()
-    rclpy.spin(node)
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
     node.destroy_node()
     rclpy.shutdown()
 
