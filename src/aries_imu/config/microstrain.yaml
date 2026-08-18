@@ -60,9 +60,26 @@
     # gives +/-0.25 deg static roll/pitch and +/-0.8 deg heading; these are
     # deliberately looser than spec so the EKF does not over-trust the IMU
     # while the rover drives and the magnetometer sees motor current.
+    #
+    # yaw (bottom-right entry) loosened further, from 0.0025 (~2.9deg std)
+    # to 0.08 (~16deg std): real driving tests showed fused yaw
+    # tracking the AHRS's own raw absolute-yaw output nearly exactly (swings
+    # matched to within 0.3deg across a 60s run -- confirmed via
+    # yaw_source_compare.py -- so robot_localization's EKF wasn't the
+    # problem), with real swings up to 10-15deg correlated with aggressive
+    # turning, consistent with motor-current EMI on the magnetometer. This
+    # widens robot_localization's trust in each individual absolute-yaw
+    # sample to roughly cover that observed disturbance band, so it leans on
+    # the gyro-derived vyaw (not magnetometer-dependent, and excellent per
+    # imu_noise_check.py's stationary measurement) for moment-to-moment
+    # continuity instead of chasing every EMI-induced swing, while still
+    # slowly reconciling to the AHRS's absolute heading given enough
+    # consistent samples. Re-test after this; if drift persists, the next
+    # step is a raw gyro+magnetometer CSV logger for deeper analysis rather
+    # than more covariance guessing.
     imu_orientation_cov: [0.0004, 0.0,    0.0,
                           0.0,    0.0004, 0.0,
-                          0.0,    0.0,    0.0025]
+                          0.0,    0.0,    0.08]
     imu_angular_cov: [0.00004, 0.0,     0.0,
                       0.0,     0.00004, 0.0,
                       0.0,     0.0,     0.00004]
