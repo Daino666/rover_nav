@@ -102,7 +102,7 @@ LA_DETOUR = 1.1       # Expanded lookahead distance for smooth detour curves (m)
 BASE_VELOCITY = 0.55        # Normal cruise speed (m/s)
 MIN_VELOCITY = 0.22         # Minimum forward speed during tight turns (m/s)
 GOAL_TOLERANCE = 0.40      # Arrival radius to final goal (m)
-MAX_CURVATURE = 1.40        # Smooth maximum curvature limit (1/m)
+MAX_CURVATURE = 0.90        # Smooth maximum curvature limit (1/m) - capped to avoid aggressive turns
 
 # ── Obstacle Avoidance Parameters ─────────────────────────────────────────────
 SAFETY_MARGIN = 0.45        # Extra lateral buffer on top of robot+obstacle radii (m)
@@ -111,6 +111,16 @@ STOP_DIST = 0.40            # Emergency halt distance (m)
 CLEAR_PAST_DISTANCE = 1.4   # Longitudinal hold distance post-obstacle (m)
 AVOIDANCE_LOOKAHEAD_FACTOR = 2.2 #Scan up to LA * 2.5 = 3.0 m ahead
 ENABLE_AVOIDANCE = True
+CRITICAL_STOP_CLEARANCE = 0.15  # If obstacle clearance drops below this, hard-stop & abandon detour, re-route to global path (m)
+
+# Detour terrain-cost gating: static_map_data marks a cell "occupied" (true steep hill/mound) at
+# pgm<89, i.e. cost > (255-89)/255 ~= 0.65. The hard block below tracks that real cutoff (with a
+# small margin) so mildly-sloped-but-safe ground isn't rejected outright and the rover has no
+# legal detour left. Cells above the soft-penalty start are still allowed but weighted heavier so
+# a flatter alternative is preferred whenever one is available.
+DETOUR_HARD_BLOCK_COST = 0.70
+DETOUR_SOFT_PENALTY_START = 0.35
+DETOUR_SOFT_PENALTY_WEIGHT = 4.0
 
 # ── Dynamic Local Detour Parameters & State ───────────────────────────────────
 DETOUR_SCAN_MIN_RANGE = 0.85    # Minimum obstacle detection range to trigger detour (m)
@@ -509,20 +519,33 @@ def evaluate_candidate_detour(detour_waypoints, critical_obs):
 
     total_cost = 0.0
     max_cost = 0.0
+    traversable = True
 
     for pt in detour_waypoints:
         cost = get_world_cell_cost(pt[0], pt[1])
-        # If cell is inside steep hill or occupied obstacle
-        if cost > 0.55 or is_world_cell_occupied(pt[0], pt[1]):
-            return False, 99999.0, 1.0
+        if cost > max_cost:
+            max_cost = cost
+
+        # If cell is inside steep hill or occupied obstacle: keep scanning so max_cost
+        # reflects the true peak (needed for an honest comparison when picking a fallback side),
+        # but mark the whole candidate as rejected.
+        if cost > DETOUR_HARD_BLOCK_COST or is_world_cell_occupied(pt[0], pt[1]):
+            traversable = False
+            continue
 
         # Check inflation margin
         if is_world_cell_occupied(pt[0], pt[1], inflation_margin=0.20):
             total_cost += 10.0  # Near boundary penalty
 
+        # Soft penalty for merely-sloped (but legal) ground so flatter alternatives still win
+        # a tie-break, without banning this cell outright like the hard-block threshold does.
+        if cost > DETOUR_SOFT_PENALTY_START:
+            total_cost += (cost - DETOUR_SOFT_PENALTY_START) * DETOUR_SOFT_PENALTY_WEIGHT
+
         total_cost += cost
-        if cost > max_cost:
-            max_cost = cost
+
+    if not traversable:
+        return False, 99999.0, max_cost
 
     avg_cost = total_cost / len(detour_waypoints)
     return True, avg_cost, max_cost
@@ -563,11 +586,14 @@ def select_best_detour(node, critical_obs):
             else:
                 return cand_right_pts, k_rejoin_right, -1.0
     else:
-        # If neither is fully free, try the one with lower max cost
-        if max_cost_left <= max_cost_right:
-            return cand_left_pts, k_rejoin_left, 1.0
-        else:
-            return cand_right_pts, k_rejoin_right, -1.0
+        # Neither side is traversable (both would climb high-cost/occupied terrain) -
+        # refuse to commit to a detour through the mountain. The collision guard will
+        # stop/slow the rover in front of the obstacle instead.
+        node.get_logger().warn(
+            f"⚠️ No traversable detour on either side (max_cost L={max_cost_left:.2f}, "
+            f"R={max_cost_right:.2f}) — refusing to route over high-cost terrain."
+        )
+        return None, 0, 0.0
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -641,7 +667,7 @@ def publish_cmd_vel(node, linear, angular):
     else:
         dt = 0.1
         max_dlinear  = 1.5 * dt  # 0.15 m/s per tick
-        max_dangular = 3.5 * dt  # 0.35 rad/s per tick
+        max_dangular = 2.0 * dt  # 0.20 rad/s per tick - gentler ramp to avoid jerky/aggressive turns
 
         smooth_linear  = float(np.clip(linear,  last_cmd_linear  - max_dlinear,  last_cmd_linear  + max_dlinear))
         smooth_angular = float(np.clip(angular, last_cmd_angular - max_dangular, last_cmd_angular + max_dangular))
@@ -942,13 +968,23 @@ def _control_loop_inner(node: Node):
             gx, gy = point_local_to_global(ox, oy, car_yaw, car_global_axis)
 
             # 1. Immediate Physical Front Bumper Guard (hard safety stop within 15cm of chassis)
-            if 0.0 < ox < (ROVER_FRONT_EXTENT + 0.15) and abs(oy) < (half_body_w + 0.05):
+            if 0.0 < ox < (ROVER_FRONT_EXTENT + CRITICAL_STOP_CLEARANCE) and abs(oy) < (half_body_w + 0.05):
                 is_blocked = True
                 speed_scale = 0.0
-                node.get_logger().warn(
-                    f"🛑 Immediate bumper guard: obstacle at [{ox:.2f}m, {oy:.2f}m] front={ox - ROVER_FRONT_EXTENT:.2f}m! Pivoting away...",
-                    throttle_duration_sec=0.5
-                )
+                if active_detour_path is not None:
+                    # Local detour has become unsafe (obstacle within critical clearance) -
+                    # abandon it and re-route back onto the global path instead of continuing it blind.
+                    active_detour_path = None
+                    detour_obstacle_info = None
+                    node.get_logger().warn(
+                        f"🛑 Critical clearance ({ox - ROVER_FRONT_EXTENT:.2f}m < {CRITICAL_STOP_CLEARANCE}m) on active detour! "
+                        f"Aborting detour, re-routing to global path...",
+                    )
+                else:
+                    node.get_logger().warn(
+                        f"🛑 Immediate bumper guard: obstacle at [{ox:.2f}m, {oy:.2f}m] front={ox - ROVER_FRONT_EXTENT:.2f}m! Pivoting away...",
+                        throttle_duration_sec=0.5
+                    )
                 break
 
             # 2. Trajectory Blockage Check: Is obstacle directly blocking the upcoming active path?
@@ -1025,21 +1061,22 @@ def _control_loop_inner(node: Node):
         publish_cmd_vel(node, desired_linear, desired_angular)
         return
 
-    # Proportional smooth steering without heading overshoot or zero-velocity tire scrub stall
-    if abs(angle_to_target) > 0.85:  # Large heading error: sharp turning crawl
-        desired_linear = float(MIN_VELOCITY * 0.85 * speed_scale)
-        desired_angular = float(np.clip(1.8 * angle_to_target, -0.90, 0.90))
-    elif abs(angle_to_target) > 0.40: # Medium turn: smooth forward curve
-        desired_linear = float(BASE_VELOCITY * 0.60 * speed_scale)
-        desired_angular = float(np.clip(1.5 * angle_to_target, -0.70, 0.70))
+    # Proportional smooth steering: prioritize slowing/near-halting over sharp turning.
+    # A big heading error should crawl-and-pivot gently, not drive fast through a snap turn.
+    if abs(angle_to_target) > 0.85:  # Large heading error: near-halt, gentle re-orient
+        desired_linear = float(MIN_VELOCITY * 0.35 * speed_scale)
+        desired_angular = float(np.clip(1.2 * angle_to_target, -0.55, 0.55))
+    elif abs(angle_to_target) > 0.40: # Medium turn: slow, smooth forward curve
+        desired_linear = float(BASE_VELOCITY * 0.40 * speed_scale)
+        desired_angular = float(np.clip(1.1 * angle_to_target, -0.45, 0.45))
     else:
         # Pure pursuit continuous curvature tracking
-        curv = (2.0 * math.sin(angle_to_target)) / max(0.40, ld)
+        curv = (2.0 * math.sin(angle_to_target)) / max(0.55, ld)
         curv = float(np.clip(curv, -MAX_CURVATURE, MAX_CURVATURE))
-        turn_factor = max(0.55, math.cos(angle_to_target * 0.6))
+        turn_factor = max(0.45, math.cos(angle_to_target * 0.8))
         target_vel = max(MIN_VELOCITY, BASE_VELOCITY * speed_scale * turn_factor)
-        effective_v = max(target_vel, 0.30)
-        desired_angular = float(np.clip(curv * effective_v, -0.65, 0.65))
+        effective_v = max(target_vel, 0.25)
+        desired_angular = float(np.clip(curv * effective_v, -0.45, 0.45))
         desired_linear = float(target_vel)
 
     # ── Anti-Stall Traction Monitor ──────────────────────────────────────────

@@ -47,7 +47,7 @@ global_costmap:
         # Smoother decay curve (1.8) + larger radius (0.85m) creates a natural
         # parabolic cost trough that keeps the planned path dead-center between hills.
         cost_scaling_factor: 1.8
-        inflation_radius: 0.45
+        inflation_radius: 0.55
 
 planner_server:
   ros__parameters:
