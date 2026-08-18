@@ -16,12 +16,23 @@ ekf_filter_node:
     odom0: /odom
     odom0_config: [false,  false,  false,   # x, y, z - ONLY position
                    false, false, false,   # roll, pitch, yaw - DON'T use encoder yaw!
-                   true,  true,   false,  # vx, vy, vz - vy fused as a non-holonomic
-                   # constraint: Odom.py always publishes twist.twist.linear.y = 0.0
-                   # (covariance[7] = 0.1) since this 6-wheel skid-steer rover can't
-                   # move sideways; fusing it pulls vy toward 0 instead of letting it
-                   # wander from process noise alone (was unfused before -- the
-                   # measurement existed but nothing consumed it).
+                   true,  false,  false,   # vx, vy, vz - velocities
+                   # vy was briefly fused as a non-holonomic (zero side-slip)
+                   # constraint, on the theory that Odom.py's published
+                   # twist.twist.linear.y = 0.0 was a free, already-tuned
+                   # measurement going unused. Reverted: real loop testing
+                   # (22m-hall figure-eight, 3 laps) showed a large, growing
+                   # lateral (y) position error strongly correlated with the
+                   # rover's differential-steering turns -- consistent with
+                   # the zero-side-slip assumption being false exactly during
+                   # turns (skid-steer wheels are fixed, not steered, so real
+                   # lateral scrub during a turn is expected, not a fault).
+                   # Forcibly zeroing vy right when it's least likely to be
+                   # zero biases the filter precisely where this drift
+                   # appeared. If revisited, gate it on not-currently-turning
+                   # (e.g. inflate odom vy covariance whenever commanded/
+                   # measured wheel differential is large) rather than fusing
+                   # it unconditionally.
                    false, false, false,   # angular velocities
                    false, false, false]   # accelerations
     odom0_differential: false
