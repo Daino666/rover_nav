@@ -1,0 +1,256 @@
+# Full bridge for worlds/test_world.sdf (world name: empty).
+- ros_topic_name: "/clock"
+  gz_topic_name: "/clock"
+  ros_type_name: "rosgraph_msgs/msg/Clock"
+  gz_type_name: "gz.msgs.Clock"
+  direction: GZ_TO_ROS
+
+# The JointStatePublisher plugin publishes on gz-side /joint_states (the
+# world-scoped /world/empty/model/aries/joint_state is advertised but silent).
+- ros_topic_name: "/joint_states"
+  gz_topic_name: "/joint_states"
+  ros_type_name: "sensor_msgs/msg/JointState"
+  gz_type_name: "gz.msgs.Model"
+  direction: GZ_TO_ROS
+
+# Passive maintenance-panel controls publish separately so their measured
+# positions do not get mixed into the rover's robot_state_publisher input.
+- ros_topic_name: "/maintenance_panel/joint_states"
+  gz_topic_name: "/maintenance_panel/joint_states"
+  ros_type_name: "sensor_msgs/msg/JointState"
+  gz_type_name: "gz.msgs.Model"
+  direction: GZ_TO_ROS
+
+- ros_topic_name: "/world/empty/pose/info"
+  gz_topic_name: "/world/empty/pose/info"
+  ros_type_name: "geometry_msgs/msg/PoseArray"
+  gz_type_name: "gz.msgs.Pose_V"
+  direction: GZ_TO_ROS
+
+# Gazebo DiffDrive TF stays private; the simulation EKF owns the corrected
+# odom -> base_footprint transform in ROS.
+
+
+- ros_topic_name: "/cmd_vel"
+  gz_topic_name: "/cmd_vel"
+  ros_type_name: "geometry_msgs/msg/Twist"
+  gz_type_name: "gz.msgs.Twist"
+  direction: ROS_TO_GZ
+
+
+- ros_topic_name: "/camera/color/image_raw"
+  gz_topic_name:  "/camera/color/image_raw"
+  ros_type_name:  "sensor_msgs/msg/Image"
+  gz_type_name:   "gz.msgs.Image"
+  direction:      GZ_TO_ROS
+
+
+- ros_topic_name: "/camera/color/camera_info"
+  gz_topic_name:  "/camera/color/camera_info"
+  ros_type_name:  "sensor_msgs/msg/CameraInfo"
+  gz_type_name:   "gz.msgs.CameraInfo"
+  direction:      GZ_TO_ROS
+
+- ros_topic_name: "/camera/depth/camera_info"
+  gz_topic_name:  "/camera/depth/camera_info"
+  ros_type_name:  "sensor_msgs/msg/CameraInfo"
+  gz_type_name:   "gz.msgs.CameraInfo"
+  direction:      GZ_TO_ROS
+
+- ros_topic_name: "/camera/depth/image_rect_raw"
+  gz_topic_name:  "/camera/depth/image_rect_raw"
+  ros_type_name:  "sensor_msgs/msg/Image"
+  gz_type_name:   "gz.msgs.Image"
+  direction:      GZ_TO_ROS
+
+# Gazebo renders depth and color with identical intrinsics and optical frames,
+# so the raw depth is already registered. Mirror the RealSense driver's aligned
+# topic so the colored DepthCloud uses the same interface in sim and hardware.
+- ros_topic_name: "/camera/aligned_depth_to_color/image_raw"
+  gz_topic_name:  "/camera/depth/image_rect_raw"
+  ros_type_name:  "sensor_msgs/msg/Image"
+  gz_type_name:   "gz.msgs.Image"
+  direction:      GZ_TO_ROS
+
+# The /camera/.../points and /camera/infra* bridges were removed: the infra
+# render sensors no longer exist in simulation and nothing consumed the point
+# cloud. Every bridged image stream costs serialization CPU on both sides.
+
+
+# Gripper Camera Topics (D435i on gripper — gripper_camera.xacro)
+- ros_topic_name: "/gripper_camera/color/image_raw"
+  gz_topic_name:  "/gripper_camera/color/image_raw"
+  ros_type_name:  "sensor_msgs/msg/Image"
+  gz_type_name:   "gz.msgs.Image"
+  direction:      GZ_TO_ROS
+
+- ros_topic_name: "/gripper_camera/color/camera_info"
+  gz_topic_name:  "/gripper_camera/color/camera_info"
+  ros_type_name:  "sensor_msgs/msg/CameraInfo"
+  gz_type_name:   "gz.msgs.CameraInfo"
+  direction:      GZ_TO_ROS
+
+- ros_topic_name: "/gripper_camera/depth/camera_info"
+  gz_topic_name:  "/gripper_camera/depth/camera_info"
+  ros_type_name:  "sensor_msgs/msg/CameraInfo"
+  gz_type_name:   "gz.msgs.CameraInfo"
+  direction:      GZ_TO_ROS
+
+- ros_topic_name: "/gripper_camera/depth/image_rect_raw"
+  gz_topic_name:  "/gripper_camera/depth/image_rect_raw"
+  ros_type_name:  "sensor_msgs/msg/Image"
+  gz_type_name:   "gz.msgs.Image"
+  direction:      GZ_TO_ROS
+
+# Simulation alias for the hardware aligned_depth_to_color topic.
+# In Gazebo both depth and color sensors share gripper_camera_depth_optical_frame,
+# so depth/image_rect_raw is already co-registered with the color image — bridging
+# it under the aligned name lets vision_grasp_node use use_aligned_depth:=true in both modes.
+- ros_topic_name: "/gripper_camera/aligned_depth_to_color/image_raw"
+  gz_topic_name:  "/gripper_camera/depth/image_rect_raw"
+  ros_type_name:  "sensor_msgs/msg/Image"
+  gz_type_name:   "gz.msgs.Image"
+  direction:      GZ_TO_ROS
+
+# The /gripper_camera/.../points and /gripper_camera/infra* bridges were
+# removed for the same reason as the front-camera ones above. The camera IMU
+# bridges went with the IMU sensors themselves: no camera IMU is used anywhere
+# in the stack, in simulation or on hardware.
+
+
+
+
+
+
+
+# (Recommended) Odometry from DiffDrive → ROS
+- ros_topic_name: "/odom"
+  gz_topic_name: "/odom"
+  ros_type_name: "nav_msgs/msg/Odometry"
+  gz_type_name: "gz.msgs.Odometry"
+  direction: GZ_TO_ROS
+
+- ros_topic_name: "/ground_truth/odom"
+  gz_topic_name: "/ground_truth/odom"
+  ros_type_name: "nav_msgs/msg/Odometry"
+  gz_type_name: "gz.msgs.Odometry"
+  direction: GZ_TO_ROS
+
+
+
+
+
+
+
+# IMU data
+- ros_topic_name: "/imu"
+  gz_topic_name: "/imu"
+  ros_type_name: "sensor_msgs/msg/Imu"
+  gz_type_name: "gz.msgs.IMU"
+  direction: GZ_TO_ROS
+
+
+
+- ros_topic_name: "/world/empty/light_config"
+  gz_topic_name: "/world/empty/light_config"
+  ros_type_name: "ros_gz_interfaces/msg/Light"
+  gz_type_name: "gz.msgs.Light"
+  direction: GZ_TO_ROS
+
+- ros_topic_name: "/aries/L_Rocker_Joint/cmd_pos"
+  gz_topic_name:  "/model/aries/joint/L_Rocker_Joint/cmd_pos"
+  ros_type_name:  "std_msgs/msg/Float64"
+  gz_type_name:   "gz.msgs.Double"
+  direction:      ROS_TO_GZ
+
+- ros_topic_name: "/aries/R_Rocker_Joint/cmd_pos"
+  gz_topic_name:  "/model/aries/joint/R_Rocker_Joint/cmd_pos"
+  ros_type_name:  "std_msgs/msg/Float64"
+  gz_type_name:   "gz.msgs.Double"
+  direction:      ROS_TO_GZ
+
+# - ros_topic_name: "/aries/L_Boggie_Joint/cmd_pos"
+#   gz_topic_name:  "/model/aries/joint/L_Boggie_Joint/cmd_pos"
+#   ros_type_name:  "std_msgs/msg/Float64"
+#   gz_type_name:   "gz.msgs.Double"
+#   direction:      ROS_TO_GZ
+  
+# - ros_topic_name: "/aries/R_Boggie_Joint/cmd_pos"
+#   gz_topic_name:  "/model/aries/joint/R_Boggie_Joint/cmd_pos"
+#   ros_type_name:  "std_msgs/msg/Float64"
+#   gz_type_name:   "gz.msgs.Double"
+#   direction:      ROS_TO_GZ
+
+# igus_rebel_robot arm joints - DISABLED: Using gz_ros2_control instead
+- ros_topic_name: "/aries/joint1/cmd_pos"
+  gz_topic_name:  "/model/aries/joint/joint1/cmd_pos"
+  ros_type_name:  "std_msgs/msg/Float64"
+  gz_type_name:   "gz.msgs.Double"
+  direction:      ROS_TO_GZ
+
+- ros_topic_name: "/aries/joint2/cmd_pos"
+  gz_topic_name:  "/model/aries/joint/joint2/cmd_pos"
+  ros_type_name:  "std_msgs/msg/Float64"
+  gz_type_name:   "gz.msgs.Double"
+  direction:      ROS_TO_GZ 
+
+- ros_topic_name: "/aries/joint3/cmd_pos"
+  gz_topic_name:  "/model/aries/joint/joint3/cmd_pos"
+  ros_type_name:  "std_msgs/msg/Float64"
+  gz_type_name:   "gz.msgs.Double"
+  direction:      ROS_TO_GZ
+
+- ros_topic_name: "/aries/joint4/cmd_pos"
+  gz_topic_name:  "/model/aries/joint/joint4/cmd_pos"
+  ros_type_name:  "std_msgs/msg/Float64"
+  gz_type_name:   "gz.msgs.Double"
+  direction:      ROS_TO_GZ
+
+- ros_topic_name: "/aries/joint5/cmd_pos"
+  gz_topic_name:  "/model/aries/joint/joint5/cmd_pos"
+  ros_type_name:  "std_msgs/msg/Float64"
+  gz_type_name:   "gz.msgs.Double"
+  direction:      ROS_TO_GZ
+
+- ros_topic_name: "/aries/joint6/cmd_pos"
+  gz_topic_name:  "/model/aries/joint/joint6/cmd_pos"
+  ros_type_name:  "std_msgs/msg/Float64"
+  gz_type_name:   "gz.msgs.Double"
+  direction:      ROS_TO_GZ
+
+# Gripper control - Direct command
+- ros_topic_name: "/aries/gripper_gear_left_joint/cmd_pos"
+  gz_topic_name:  "/model/aries/joint/gripper_gear_left_joint/cmd_pos"
+  ros_type_name:  "std_msgs/msg/Float64"
+  gz_type_name:   "gz.msgs.Double"
+  direction:      ROS_TO_GZ
+
+- ros_topic_name: "/aries/gripper_gear_right_joint/cmd_pos"
+  gz_topic_name:  "/model/aries/joint/gripper_gear_right_joint/cmd_pos"
+  ros_type_name:  "std_msgs/msg/Float64"
+  gz_type_name:   "gz.msgs.Double"
+  direction:      ROS_TO_GZ
+
+- ros_topic_name: "/aries/gripper_link_left_joint/cmd_pos"
+  gz_topic_name:  "/model/aries/joint/gripper_link_left_joint/cmd_pos"
+  ros_type_name:  "std_msgs/msg/Float64"
+  gz_type_name:   "gz.msgs.Double"
+  direction:      ROS_TO_GZ
+
+- ros_topic_name: "/aries/gripper_link_right_joint/cmd_pos"
+  gz_topic_name:  "/model/aries/joint/gripper_link_right_joint/cmd_pos"
+  ros_type_name:  "std_msgs/msg/Float64"
+  gz_type_name:   "gz.msgs.Double"
+  direction:      ROS_TO_GZ
+
+- ros_topic_name: "/aries/gripper_bucket_left_joint/cmd_pos"
+  gz_topic_name:  "/model/aries/joint/gripper_bucket_left_joint/cmd_pos"
+  ros_type_name:  "std_msgs/msg/Float64"
+  gz_type_name:   "gz.msgs.Double"
+  direction:      ROS_TO_GZ
+
+- ros_topic_name: "/aries/gripper_bucket_right_joint/cmd_pos"
+  gz_topic_name:  "/model/aries/joint/gripper_bucket_right_joint/cmd_pos"
+  ros_type_name:  "std_msgs/msg/Float64"
+  gz_type_name:   "gz.msgs.Double"
+  direction:      ROS_TO_GZ

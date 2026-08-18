@@ -1,0 +1,105 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+   
+    <!-- Wheel Macro -->
+    <xacro:macro name="wheel" params="prefix reflect">
+        <link name="${prefix}_Wheel_Link">
+            <inertial>
+                <origin xyz="0 0 0.0350608778434713" rpy="0 0 0"/>
+                <mass value="${wheel_mass}"/>
+                <inertia
+                    ixx="0.00914288966451803"
+                    ixy="0"
+                    ixz="0"
+                    iyy="0.00914288966451803"
+                    iyz="0"
+                    izz="0.0160987749043434"/>
+            </inertial>
+            <visual>
+                <origin xyz="0 0 0" rpy="0 0 0"/>
+                <geometry>
+                    <mesh filename="${mesh_location}/${prefix}_Wheel_Link.STL"/>
+                </geometry>
+                <material name="blue"/>
+            </visual>
+            <collision>
+                <origin xyz="0 0 0" rpy="0 0 0"/>
+                <geometry>
+                    <mesh filename="${mesh_location}/${prefix}_Wheel_Link.STL"/>
+                </geometry>
+            </collision>
+        </link>
+    </xacro:macro>
+
+
+    <!-- IMU Frame -->
+    <link name="imu_frame"/>
+
+    <joint name="imu_joint" type="fixed">
+        <parent link="base_link"/>
+        <child link="imu_frame"/>
+        <origin xyz="0.0 0.0 0.08" rpy="0.0 0.0 0.0"/>
+    </joint>
+
+    <!-- Base Footprint - root link for mobile robot (odom frame provided by odometry, not URDF) -->
+    <link name="base_footprint">
+    </link>
+
+    <joint name="base_footprint_joint" type="fixed">
+        <parent link="base_footprint" />
+        <child link="base_link" />
+        <!-- See base_link_height in common_properties.xacro. Was 0.165, which
+             sat 41 mm below the real wheel contact plane. -->
+        <origin xyz="0 0 ${base_link_height}" rpy="0 0 0" />
+    </joint>
+
+    <!-- Base Link -->
+    <link name="base_link">
+        <inertial>
+            <origin xyz="-0.0194894545849965 0.000308596526751935 0.119828029892907"
+                    rpy="0 0 0" />
+            <!-- The complete competition rover weighs 90 kg. The other links
+                 total 49.0157953866879 kg with the default bucket fingertip,
+                 so batteries, electronics and the
+                 remaining chassis hardware are represented here. The inertia
+                 tensor is scaled with mass from the original CAD tensor,
+                 preserving the chassis radii of gyration. -->
+            <mass value="40.9842046133121" />
+            <inertia
+                ixx="0.567123503572166"
+                ixy="-0.000210341653344592"
+                ixz="0.0548478665577117"
+                iyy="1.20297870597186"
+                iyz="6.31719911069787E-11"
+                izz="1.55240322545973" />
+        </inertial>
+        <visual>
+            <origin xyz="0 0 0"
+                    rpy="0 0 0" />
+            <geometry>
+                <mesh filename="${mesh_location}/base_link_v3.glb" />
+            </geometry>
+            
+        </visual>
+        <collision>
+            <origin xyz="0 0 0"
+                    rpy="0 0 0" />
+            <geometry>
+                <mesh filename="${mesh_location}/base_link_v3.stl" />
+            </geometry>
+        </collision>
+    </link>
+
+    
+
+    
+
+
+    
+    
+  
+    
+
+    
+</robot>

@@ -1,0 +1,216 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+    <!--
+        D435i camera mounted on the gripper base, facing toward the gripper tip.
+
+        All TF frames follow the standard RealSense naming convention
+          gripper_camera_link
+          gripper_camera_depth_frame / gripper_camera_depth_optical_frame
+          gripper_camera_color_frame / gripper_camera_color_optical_frame
+          gripper_camera_left_ir_frame  / gripper_camera_left_ir_optical_frame
+          gripper_camera_right_ir_frame / gripper_camera_right_ir_optical_frame
+
+        Simulated sensors (matched to what the hardware driver is launched with
+        in aries_bringup/launch/aries_hardware.launch.py)
+          Color  69 deg H-FOV (1.204 rad), 640x480, RGB_INT8,   15 Hz
+          Depth  69 deg H-FOV (1.204 rad), 640x480, R_FLOAT32,  15 Hz, noise stddev 3 mm
+        No infra and no IMU: neither is used by anything in the stack, and each
+        extra render sensor costs real GPU time.
+
+        ROS topics (bridged via gazebo_bridge.yaml)
+          /gripper_camera/color/image_raw
+          /gripper_camera/color/camera_info
+          /gripper_camera/depth/image_rect_raw
+          /gripper_camera/depth/camera_info
+          /gripper_camera/aligned_depth_to_color/image_raw  (alias of the depth image)
+    -->
+
+    <!-- Mount joint - attaches camera to gripper base -->
+    <joint name="gripper_camera_joint" type="fixed">
+        <origin xyz="0.0 0.047439 0.035208" rpy="0 -1.57 -1.57"/>
+        <parent link="arm_gripper_base_link"/>
+        <child link="gripper_camera_bottom_screw_frame"/>
+    </joint>
+    <link name="gripper_camera_bottom_screw_frame"/>
+
+    <joint name="gripper_camera_link_joint" type="fixed">
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <parent link="gripper_camera_bottom_screw_frame"/>
+        <child link="gripper_camera_link"/>
+    </joint>
+
+    <link name="gripper_camera_link">
+        <visual>
+            <geometry>
+                <mesh filename="${mesh_location}/d435.stl"/>
+            </geometry>
+            <material name="camera_aluminum">
+                <color rgba="0.5 0.5 0.5 1"/>
+            </material>
+        </visual>
+        <collision>
+            <origin xyz="-0.0126 0 0" rpy="0 0 0"/>
+            <geometry>
+                <box size="0.0252 0.090 0.025"/>
+            </geometry>
+        </collision>
+        <!-- Uniform box of the collision dimensions (25.2 x 90 x 25 mm) at the
+             datasheet mass, m/12*(a^2+b^2). The previous tensor was the rover
+             camera's scaled by 1e-3, which left it ~13x below the box value.
+             The COM sits at the collision box centroid, not at the link origin
+             (which is the bottom screw mount, on the front face). -->
+        <inertial>
+            <mass value="0.072"/>
+            <origin xyz="-0.0126 0 0" rpy="0 0 0"/>
+            <inertia ixx="0.00005235" ixy="0.0" ixz="0.0"
+                     iyy="0.00000751" iyz="0.0" izz="0.00005236"/>
+        </inertial>
+    </link>
+
+    <!-- Depth sensor frames -->
+    <joint name="gripper_camera_depth_joint" type="fixed">
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <parent link="gripper_camera_link"/>
+        <child link="gripper_camera_depth_frame"/>
+    </joint>
+    <link name="gripper_camera_depth_frame"/>
+
+    <joint name="gripper_camera_depth_optical_joint" type="fixed">
+        <origin xyz="0 0 0" rpy="-1.5708 0 -1.5708"/>
+        <parent link="gripper_camera_depth_frame"/>
+        <child link="gripper_camera_depth_optical_frame"/>
+    </joint>
+    <link name="gripper_camera_depth_optical_frame"/>
+
+    <!-- IR sensor frames -->
+    <joint name="gripper_camera_left_ir_joint" type="fixed">
+        <origin xyz="0 0.0 0" rpy="0 0 0"/>
+        <parent link="gripper_camera_depth_frame"/>
+        <child link="gripper_camera_left_ir_frame"/>
+    </joint>
+    <link name="gripper_camera_left_ir_frame"/>
+
+    <joint name="gripper_camera_left_ir_optical_joint" type="fixed">
+        <origin xyz="0 0 0" rpy="-1.5708 0 -1.5708"/>
+        <parent link="gripper_camera_left_ir_frame"/>
+        <child link="gripper_camera_left_ir_optical_frame"/>
+    </joint>
+    <link name="gripper_camera_left_ir_optical_frame"/>
+
+    <joint name="gripper_camera_right_ir_joint" type="fixed">
+        <origin xyz="0 -0.050 0" rpy="0 0 0"/>
+        <parent link="gripper_camera_depth_frame"/>
+        <child link="gripper_camera_right_ir_frame"/>
+    </joint>
+    <link name="gripper_camera_right_ir_frame"/>
+
+    <joint name="gripper_camera_right_ir_optical_joint" type="fixed">
+        <origin xyz="0 0 0" rpy="-1.5708 0 -1.5708"/>
+        <parent link="gripper_camera_right_ir_frame"/>
+        <child link="gripper_camera_right_ir_optical_frame"/>
+    </joint>
+    <link name="gripper_camera_right_ir_optical_frame"/>
+
+    <!-- Color sensor frames -->
+    <joint name="gripper_camera_color_joint" type="fixed">
+        <origin xyz="0 0.015 0" rpy="0 0 0"/>
+        <parent link="gripper_camera_depth_frame"/>
+        <child link="gripper_camera_color_frame"/>
+    </joint>
+    <link name="gripper_camera_color_frame"/>
+
+    <joint name="gripper_camera_color_optical_joint" type="fixed">
+        <origin xyz="0 0 0" rpy="-1.5708 0 -1.5708"/>
+        <parent link="gripper_camera_color_frame"/>
+        <child link="gripper_camera_color_optical_frame"/>
+    </joint>
+    <link name="gripper_camera_color_optical_frame"/>
+
+    <!-- The accel/gyro frames were removed with the IMU sensor: the D435i IMU is
+         not used anywhere in the stack, and the hardware driver is launched with
+         enable_gyro/enable_accel false, so it publishes no IMU frames either. -->
+
+    <!-- Gazebo sensors -->
+    <gazebo reference="gripper_camera_link">
+        <self_collide>0</self_collide>
+
+        <!-- Color camera - 640x480 @ 15 Hz.
+             gz_frame_id matches depth_optical_frame: in Gazebo both sensors render from
+             gripper_camera_link (same physical position). Using color_optical_frame would
+             apply a 15 mm TF offset that doesn't exist in simulation, misaligning the
+             DepthCloud color overlay. Using depth_optical_frame keeps both images in the
+             same frame so DepthCloud color-to-depth mapping is pixel-perfect.
+
+             Resolution/FOV/rate are deliberately IDENTICAL to the depth sensor below:
+             the bridge re-publishes depth under the aligned_depth_to_color alias, and
+             vision_grasp_node indexes the depth image with color-image pixel
+             coordinates. That is only geometrically valid when both cameras share the
+             same intrinsics. 15 Hz keeps the render-sensor load low while still
+             providing a responsive colored DepthCloud. -->
+        <sensor name="gripper_camera_color" type="camera">
+            <camera name="gripper_camera">
+                <horizontal_fov>1.204</horizontal_fov>
+                <image>
+                    <width>640</width>
+                    <height>480</height>
+                    <format>RGB_INT8</format>
+                </image>
+                <clip>
+                    <near>0.02</near>
+                    <far>100</far>
+                </clip>
+                <noise>
+                    <type>gaussian</type>
+                    <mean>0.0</mean>
+                    <stddev>0.007</stddev>
+                </noise>
+            </camera>
+            <always_on>1</always_on>
+            <update_rate>15</update_rate>
+            <visualize>false</visualize>
+            <topic>gripper_camera/color/image_raw</topic>
+            <gz_frame_id>gripper_camera_depth_optical_frame</gz_frame_id>
+        </sensor>
+
+        <!-- The infra1/infra2 render sensors were removed from simulation: nothing
+             subscribes to them and each extra render sensor costs significant GPU
+             time (they were a large part of the sim running below real time). The
+             IR frames/links above are kept so TF matches the hardware driver. -->
+
+        <!-- Depth camera - 640x480 @ 15 Hz, same intrinsics as the color sensor
+             (see the color-sensor comment for why they must match).
+             gz_frame_id must be depth_optical_frame: Gazebo renders all sensors from the
+             parent link (gripper_camera_link), which physically coincides with the depth
+             frame (xyz offset = 0 0 0). The color_optical_frame is 15 mm offset in Y, so
+             using it here would displace 3D points by 15 mm from their true positions. -->
+        <sensor name="gripper_camera_depth" type="depth_camera">
+            <camera name="gripper_camera">
+                <horizontal_fov>1.204</horizontal_fov>
+                <image>
+                    <width>640</width>
+                    <height>480</height>
+                    <format>R_FLOAT32</format>
+                </image>
+                <clip>
+                    <near>0.02</near>
+                    <far>10</far>
+                </clip>
+                <noise>
+                    <type>gaussian</type>
+                    <mean>0.0</mean>
+                    <stddev>0.003</stddev>
+                </noise>
+            </camera>
+            <always_on>1</always_on>
+            <update_rate>15</update_rate>
+            <visualize>false</visualize>
+            <topic>gripper_camera/depth/image_rect_raw</topic>
+            <gz_frame_id>gripper_camera_depth_optical_frame</gz_frame_id>
+        </sensor>
+
+        <!-- The IMU sensor was removed: nothing subscribes to it, and the
+             hardware driver runs with enable_gyro/enable_accel false. -->
+    </gazebo>
+
+</robot>

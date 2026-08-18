@@ -1,0 +1,268 @@
+soil_sample_node:
+  ros__parameters:
+
+    # ── Frames, group, hardware ────────────────────────────────────────────
+    planning_frame: base_link
+    planning_link: arm_gripper_base_link
+    planning_group: igus_rebel_arm
+    # MUST be 'bucket' for this task: the scoop is the bucket fingertip, and the
+    # four-bar contact point differs by up to 23 mm between the three jaws, so a
+    # mismatch drives the bucket to the wrong depth. The bucket rows in
+    # aries_vision_grasp/fourbar.py are the field-calibrated originals.
+    finger_type: bucket
+    # True uses the D435i hardware-aligned depth stream (correct on the rover);
+    # the sim publishes the same topic name.
+    use_aligned_depth: true
+
+    # ── Work region, scoop depth and the deposit box live in
+    # ── config/sample_points.yaml (loaded last). Only tuning lives here.
+    # ── Work region (planning frame, metres) ───────────────────────────────
+    # The volume of ground the node may sample. The Z band is a REJECT gate, not
+    # a target: it drops the rover's own deck above and long-range returns below.
+    # MEASURED from a live survey in this scene: the ground plane sits at
+    # z = -0.167 in base_link (roughness 0.8 mm, slope 3.0 deg over the whole
+    # region), with the sand surface about 60 mm above that. Note this is NOT the
+    # -0.07 that the probe grasp's target z suggests -- that figure is the probe
+    # centre, not the floor -- and the difference is larger than a scoop is deep,
+    # which is why the bounds below and absolute_min_contact_z are set from a
+    # survey rather than inferred. Re-survey after the rover moves or is re-levelled.
+    # Upper X is 0.58, not 0.65: the reach sweep shows x=0.60 at z=-0.21 has no
+    # IK at any tilt or wrist roll, and the first live runs kept picking sites at
+    # x=0.57-0.61 (the scorer likes the flat far edge) which then failed the IK
+    # screen. Keeping the region inside the measured envelope means a chosen site
+    # is a reachable site.
+    # Upper bound 0.52, not 0.58: a STRAIGHT-DOWN entry has no IK beyond x=0.55
+    # at any wrist roll or soil height (0/4 across the board), and the site
+    # scorer otherwise favours the flat far edge and picks unreachable sites.
+    # AIMED AT THE SOIL BED, not the floor around it. Measured from a live
+    # survey: two clean surface populations in view -- bare floor at z=-0.211
+    # (34.5k points) and the raised soil bed at z=-0.137 (3.2k points, spanning
+    # y about -0.36..-0.05). The old y range [-0.18, 0.18] was mostly floor, and
+    # since the scorer ranks by FLATNESS and bare floor is flatter than granular
+    # soil, it kept choosing floor and scooping next to the tray.
+    # This range is the bed's y extent, trimmed to leave room for the 60 mm
+    # bucket footprint. Re-measure it if the tray or the rover moves.
+    work_region_z: [-0.30, 0.10]
+    # Tie-break: equally good scoops are taken nearest this XY, so the wrist
+    # stays in a posture the arm is happy in instead of drifting to the edge of
+    # the envelope. This is where the probe grasp reached without complaint.
+    prefer_scoop_xy: [0.52, 0.03]
+
+    # ── Height map ─────────────────────────────────────────────────────────
+    # 10 mm cells: fine enough to resolve the 50 mm bucket footprint into ~25
+    # cells for a plane fit, coarse enough that each cell gets several depth
+    # returns at 0.4-0.5 m range.
+    height_map_cell_m: 0.010
+    # Median height per cell. Do not raise toward 100: the maximum promotes a
+    # single speckle into a phantom mound the bucket then tries to cut.
+    height_map_percentile: 50.0
+    height_map_min_points_per_cell: 2
+    # Below this the survey is too sparse to choose a site from at all.
+    height_map_min_valid_fraction: 0.35
+    depth_stride: 2
+
+    # ── Ground detection: pooled depth frames ──────────────────────────────
+    # One depth frame is a noisy sample of the ground. The surveyed height has
+    # moved by tens of millimetres between runs (-0.116 to -0.211 observed),
+    # which is enough on its own to push the penetrate pose out of the arm's
+    # envelope. Pooling several frames into ONE height map fixes that cheaply:
+    # the per-cell median in the height map does the averaging, so accumulating
+    # is just feeding it more points -- each transformed with its OWN TF, so it
+    # stays correct if the arm drifts slightly between frames.
+    # The node logs the per-frame ground median and its spread, which tells you
+    # WHICH kind of drift you have: a large spread within one survey means
+    # sensor noise, a small spread means the geometry really moved between runs.
+    # Set false for single-frame behaviour.
+    ground_accumulate_frames: true
+    ground_frames_to_accumulate: 5
+    ground_frame_interval_sec: 0.15
+
+    # ── Scoop-site selection ───────────────────────────────────────────────
+    # Footprint scored as one patch: bucket width 50 mm plus margin for the
+    # shells' outer walls and approach error.
+    scoop_footprint_m: 0.060
+    # Roughness is the rms residual to the fitted plane. A buried rock or the
+    # probe standing in the sand shows up here well before it tilts the plane,
+    # so this is the primary "is this ground safe to cut" gate.
+    scoop_max_roughness_m: 0.006
+    # A sloped patch deflects the bucket sideways as it penetrates.
+    scoop_max_slope_deg: 12.0
+    scoop_min_coverage: 0.70
+    scoop_max_candidate_sites: 8
+
+    # ── Scoop motion ───────────────────────────────────────────────────────
+    # HEIGHT ABOVE THE SOIL SURFACE AT WHICH THE SCOOP STROKE STARTS.
+    # The bucket descends from here. With the straight-down entry below this is
+    # literally vertical height above the measured surface; with a tilted entry
+    # it is measured along the entry axis.
+    # Pair it with close_start_above_ground_m further down, which sets how far
+    # above the surface the jaws BEGIN CLOSING:
+    #   scoop_start_above_ground_m = 0.030  -> stroke starts 30 mm up
+    #   close_start_above_ground_m = 0.020  -> jaws start shutting 20 mm up
+    #   scoop_depth_m              = 0.030  -> bucket ends 30 mm below the surface
+    # STRAIGHT DOWN, as the sequence requires. This only became possible once
+    # the soil was raised onto a 60 mm plinth: measured at the raised surface
+    # (self-collision ON, whole stroke must solve),
+    #        surf z=-0.100  -0.120  -0.138  -0.160
+    #   x=0.45     3/4        2/4     2/4     2/4
+    #   x=0.50     3/4        2/4     2/4     0/4
+    #   x=0.55     0/4        0/4     0/4     0/4
+    # At the OLD ground level (-0.208) a vertical entry had no solution at any
+    # wrist roll, which is why an 18 deg tilt was needed then. Raising the soil
+    # removed the need for the tilt -- but note x must stay <= ~0.52, hence the
+    # work region below.
+    scoop_attack_deg: 0.0
+    # Direction the attack leans, projected onto the surface plane. +X (away
+    # from the rover) is the ONLY reachable lean: azimuths 90/180/270 measured
+    # 0/4 at every tilt, because leaning back over the base folds the arm in.
+    scoop_attack_azimuth_ref: [1.0, 0.0, 0.0]
+    scoop_max_depth_m: 0.060
+    # Floor for the automatic depth reduction. How deep the arm can actually go
+    # depends on where the ground is, and the surveyed ground has read -0.167,
+    # -0.175 and -0.185 across runs depending on the survey posture -- 10 mm of
+    # that is enough to push the penetrate pose out of the envelope. So the node
+    # asks for scoop_depth_m and settles for a shallower REAL scoop rather than
+    # failing: the symptom it fixes was `penetratex12` with every approach and
+    # entry solving.
+    scoop_min_depth_m: 0.012
+    # Move the whole stroke in a straight Cartesian line (approach -> entry ->
+    # penetrate as ONE path, then extract), splitting only at the close, which is
+    # a gripper command rather than a motion.
+    scoop_all_cartesian: true
+    # Past bucket length less this margin the shells stop being a scoop and the
+    # four-bar linkage itself enters the soil.
+    scoop_depth_margin_m: 0.010
+    # Extraction retraces the penetration in reverse along the same axis. A
+    # world-vertical lift out of an angled channel levers the tool against the
+    # material -- the probe grasp learned that the expensive way.
+    scoop_retrace_extraction: true
+
+    # ── Bucket: FULL OPEN to descend, FULL CLOSE to collect ────────────────
+    # No partial jaw angles anywhere in the scoop.
+    bucket_full_open_q: -1.57      # gap 183 mm
+    bucket_full_close_q: 0.07      # gap 0 mm
+    #
+    # Datum the scoop geometry is measured to. 0 = derive it from the CLOSED jaw
+    # angle (219.5 mm from the link), which is deliberate:
+    #   q=-1.57  gap 183 mm  contact 134 mm  <- where the jaw faces would MEET,
+    #                                          a virtual point high between the
+    #                                          splayed shells. NOT what touches
+    #                                          the soil.
+    #   q=+0.07  gap   0 mm  contact 220 mm  <- where the sample ends up.
+    # Referencing the scoop to the OPEN-jaw figure was the bug behind "full open
+    # is unreachable": it put the link only 134 mm above the ground, which fails
+    # IK at every x and y AND would bury the shells. The closed-jaw datum is both
+    # physically meaningful and the one that reaches. Override only if you
+    # measure the real shell tip.
+    # MEASURED, not derived: with the bucket fully closed in the sim, the
+    # furthest mesh point of gripper_bucket_*_link sits 270.3 mm from
+    # arm_gripper_base_link -- 50.8 mm BEYOND the four-bar contact midpoint.
+    # The four-bar "contact" is where the jaw FACES meet; the shell tips hang
+    # well below it, and the tips are what touch the soil.
+    # This also closed the reach gap: the arm bottoms out with the datum at
+    # z=-0.190, so a 219.5 mm datum could not put the bucket on ground at
+    # -0.209 (needed >= 238 mm), while 270 mm reaches comfortably.
+    # NOTE the same ~50 mm shows up in the probe task, whose modelled contact
+    # (220 mm) was measured 50 mm short of the physical pinch (~270 mm) and is
+    # compensated there by attached_probe_axial_offset_m. Two independent tasks
+    # hitting the same offset means the bucket rows of fourbar.contact_offset_z
+    # under-report the real contact, NOT that either task is mis-tuned.
+    scoop_reference_offset_m: 0.270
+
+    # START CLOSING DURING THE DESCENT (height is close_start_above_ground_m in
+    # sample_points.yaml): descend -> command the close without waiting -> keep
+    # descending, so the shells sweep material as they shut instead of closing
+    # after the bucket has already stopped.
+    close_during_descent: true
+    # Angle the jaws open to when tipping the sample out over the box.
+    bucket_open_q: -1.30
+    gripper_command_duration_sec: 3.0
+    gripper_settle_sec: 1.0
+    # Hold the jaws shut through extraction and transport.
+    bucket_close_hold_sec: 1.5
+
+    # ── Capture verification (divot differencing) ──────────────────────────
+    # The gripper has no position feedback on hardware and the wrist camera
+    # cannot see inside the jaws, so neither can confirm a sample. The ground
+    # can: a scoop that collected soil leaves a hole. Re-survey the site from
+    # the same posture and difference the height maps.
+    verify_capture_enabled: true
+    # ~20 cm^3. A 30 mm penetration over the 50x44 mm bucket mouth displaces
+    # ~66 cm^3, and nominal closed capacity is ~76 cm^3, so this asks for
+    # roughly a third of a full bucket before calling it a sample.
+    # CALIBRATE by weighing a real scoop; this is derived from mesh dimensions.
+    min_sample_volume_m3: 2.0e-5
+    verify_radius_m: 0.050
+    verify_min_cells: 12
+    # Per-cell changes below this are depth noise, not material.
+    verify_min_drop_m: 0.002
+    # Ground disturbed by less than this counts as untouched -> EMPTY.
+    verify_disturbed_drop_m: 0.004
+    verify_settle_sec: 1.5
+
+    # ── Motion limits and guards ───────────────────────────────────────────
+    velocity_scale: 0.12
+    acceleration_scale: 0.10
+    allowed_planning_time: 8.0
+    cartesian_eef_step: 0.005
+    # Minimum fraction of the requested Cartesian path that must be solved.
+    cartesian_min_fraction: 0.90
+    # HARD DEPTH LIMIT, RELATIVE TO THE DETECTED GROUND.
+    # Nothing may drive the bucket deeper than this below the surface the depth
+    # camera measured, so a bad depth frame cannot bury the gripper.
+    # Relative, not absolute, ON PURPOSE: an absolute Z floor cannot work in
+    # deployment because the terrain height is unknown in advance. This project
+    # has already been bitten twice by that -- a floor of -0.16 sat ABOVE the
+    # ground and rejected every waypoint, and a floor of -0.243 was fine at one
+    # site and wrong at another 40 mm lower. A relative limit travels with the
+    # terrain and needs no retuning when the rover moves.
+    # Optional SECOND floor in absolute planning-frame Z, for a fixed, known
+    # workspace. Left at -9.0 (effectively disabled) because in the field the
+    # relative limit above is the only one that means anything.
+    absolute_min_contact_z: -9.0
+    # Refuse to start a scoop unless IK exists for every waypoint first: a
+    # mid-scoop failure leaves the bucket buried.
+    prescreen_ik_all_waypoints: true
+    # Wrist rolls tried about the entry axis before a site is called unreachable,
+    # nearest the current wrist first. Roll is free for the bucket but NOT for
+    # the arm: at a real site 190 mm below the link only some rolls solve, so
+    # screening the single nearest roll made this a coin flip -- it rejected the
+    # approach on one attempt and the entry on the next at equally good sites.
+    scoop_wrist_roll_candidates: 12
+    # 300 ms single-shot IK is marginal at these near-limit poses and was part of
+    # the same flakiness.
+    ik_prescreen_timeout_sec: 1.0
+    max_scoop_attempts: 3
+
+    # ── Postures (radians, joint1..joint6) ─────────────────────────────────
+    arm_joint_names: [joint1, joint2, joint3, joint4, joint5, joint6]
+    # Arm extended forward, tool ~(0.56, -0.05, 0.43) in base_link, wrist camera
+    # looking down over the work region. Borrowed from the proven
+    # pick_home_alternative posture in aries_vision_grasp/config/pick_place.yaml.
+
+    # aries_vision_grasp's pick_home: safe posture to carry a sample in.
+    # pick_home: the START posture, the posture the loaded bucket RETURNS to,
+    # and where it goes after the box. Same values as aries_vision_grasp's
+    # pick_home_joint_positions.
+    home_joint_positions: [0.0, 0.366519, 1.18682, 0.0349066, 1.55334, 1.50098]
+    # Return to pick_home along a straight Cartesian line with the sample
+    # aboard; falls back to a joint move if that line cannot be solved.
+    cartesian_return_home: true
+    return_to_transport_after_scoop: true
+
+    # ── Deposit ─────────────────────────────────────────────────────────────
+    # The box geometry, the dump clearance and the sampling point live in
+    # config/sample_points.yaml (loaded last), so those coordinates are in one
+    # authoritative file. Only the behaviour switches stay here.
+    deposit_enabled: true
+    deposit_dump_open_q: -1.30
+    deposit_settle_sec: 2.0
+    # Draws the box outline, its dump point and the chosen sampling point in
+    # RViz on /soil_sample/markers. Use them to set the coordinates by eye.
+    publish_deposit_box_marker: true
+    joint_goal_tolerance: 0.03
+
+    # ── Topics ─────────────────────────────────────────────────────────────
+    markers_topic: /soil_sample/markers
+    height_map_cloud_topic: /soil_sample/height_map
+    publish_debug_markers: true

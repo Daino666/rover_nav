@@ -1,0 +1,1091 @@
+{
+ "frame": "maintenance_panel",
+ "console_pitch": 0.57788,
+ "console_normal": [
+  0.54625,
+  0.0,
+  0.83762
+ ],
+ "console_up_slope": [
+  -0.83762,
+  0.0,
+  0.54625
+ ],
+ "standoff": 0.06,
+ "markers": [
+  {
+   "id": 11,
+   "position": [
+    0.18111,
+    0.13,
+    0.75249
+   ],
+   "pitch": 0.57788,
+   "size": 0.05
+  },
+  {
+   "id": 13,
+   "position": [
+    0.18111,
+    -0.13,
+    0.75249
+   ],
+   "pitch": 0.57788,
+   "size": 0.05
+  },
+  {
+   "id": 14,
+   "position": [
+    -0.13719,
+    0.13,
+    0.96007
+   ],
+   "pitch": 0.57788,
+   "size": 0.05
+  }
+ ],
+ "controls": [
+  {
+   "name": "mcb_0",
+   "kind": "breaker",
+   "action": "flick",
+   "position": [
+    0.09818,
+    0.1441,
+    0.82377
+   ],
+   "pivot_position": [
+    0.09326,
+    0.1441,
+    0.81623
+   ],
+   "surface_offset_m": 0.009,
+   "approach": [
+    0.54625,
+    0.0,
+    0.83762
+   ],
+   "joint_axis": [
+    0.0,
+    -1.0,
+    0.0
+   ],
+   "jaw_axis": [
+    -0.83762,
+    0.0,
+    0.54625
+   ],
+   "travel": 0.012,
+   "grip": false,
+   "joint": "mcb_0_joint",
+   "limits": [
+    -0.4,
+    0.4
+   ],
+   "model_name": "mcb_0",
+   "target_state": "on",
+   "motion_direction": "up"
+  },
+  {
+   "name": "mcb_1",
+   "kind": "breaker",
+   "action": "flick",
+   "position": [
+    0.09818,
+    0.0723,
+    0.82377
+   ],
+   "pivot_position": [
+    0.09326,
+    0.0723,
+    0.81623
+   ],
+   "surface_offset_m": 0.009,
+   "approach": [
+    0.54625,
+    0.0,
+    0.83762
+   ],
+   "joint_axis": [
+    0.0,
+    -1.0,
+    0.0
+   ],
+   "jaw_axis": [
+    -0.83762,
+    0.0,
+    0.54625
+   ],
+   "travel": 0.012,
+   "grip": false,
+   "joint": "mcb_1_joint",
+   "limits": [
+    -0.4,
+    0.4
+   ],
+   "model_name": "mcb_1",
+   "target_state": "on",
+   "motion_direction": "up"
+  },
+  {
+   "name": "mcb_2",
+   "kind": "breaker",
+   "action": "flick",
+   "position": [
+    0.09818,
+    0.05428,
+    0.82377
+   ],
+   "pivot_position": [
+    0.09326,
+    0.05428,
+    0.81623
+   ],
+   "surface_offset_m": 0.009,
+   "approach": [
+    0.54625,
+    0.0,
+    0.83762
+   ],
+   "joint_axis": [
+    0.0,
+    -1.0,
+    0.0
+   ],
+   "jaw_axis": [
+    -0.83762,
+    0.0,
+    0.54625
+   ],
+   "travel": 0.012,
+   "grip": false,
+   "joint": "mcb_2_joint",
+   "limits": [
+    -0.4,
+    0.4
+   ],
+   "model_name": "mcb_2",
+   "target_state": "on",
+   "motion_direction": "up"
+  },
+  {
+   "name": "mcb_3",
+   "kind": "breaker",
+   "action": "flick",
+   "position": [
+    0.09818,
+    0.03626,
+    0.82377
+   ],
+   "pivot_position": [
+    0.09326,
+    0.03626,
+    0.81623
+   ],
+   "surface_offset_m": 0.009,
+   "approach": [
+    0.54625,
+    0.0,
+    0.83762
+   ],
+   "joint_axis": [
+    0.0,
+    -1.0,
+    0.0
+   ],
+   "jaw_axis": [
+    -0.83762,
+    0.0,
+    0.54625
+   ],
+   "travel": 0.012,
+   "grip": false,
+   "joint": "mcb_3_joint",
+   "limits": [
+    -0.4,
+    0.4
+   ],
+   "model_name": "mcb_3",
+   "target_state": "on",
+   "motion_direction": "up"
+  },
+  {
+   "name": "mcb_4",
+   "kind": "breaker",
+   "action": "flick",
+   "position": [
+    0.09818,
+    0.01824,
+    0.82377
+   ],
+   "pivot_position": [
+    0.09326,
+    0.01824,
+    0.81623
+   ],
+   "surface_offset_m": 0.009,
+   "approach": [
+    0.54625,
+    0.0,
+    0.83762
+   ],
+   "joint_axis": [
+    0.0,
+    -1.0,
+    0.0
+   ],
+   "jaw_axis": [
+    -0.83762,
+    0.0,
+    0.54625
+   ],
+   "travel": 0.012,
+   "grip": false,
+   "joint": "mcb_4_joint",
+   "limits": [
+    -0.4,
+    0.4
+   ],
+   "model_name": "mcb_4",
+   "target_state": "on",
+   "motion_direction": "up"
+  },
+  {
+   "name": "mcb_5",
+   "kind": "breaker",
+   "action": "flick",
+   "position": [
+    0.09818,
+    0.00022,
+    0.82377
+   ],
+   "pivot_position": [
+    0.09326,
+    0.00022,
+    0.81623
+   ],
+   "surface_offset_m": 0.009,
+   "approach": [
+    0.54625,
+    0.0,
+    0.83762
+   ],
+   "joint_axis": [
+    0.0,
+    -1.0,
+    0.0
+   ],
+   "jaw_axis": [
+    -0.83762,
+    0.0,
+    0.54625
+   ],
+   "travel": 0.012,
+   "grip": false,
+   "joint": "mcb_5_joint",
+   "limits": [
+    -0.4,
+    0.4
+   ],
+   "model_name": "mcb_5",
+   "target_state": "on",
+   "motion_direction": "up"
+  },
+  {
+   "name": "mcb_6",
+   "kind": "breaker",
+   "action": "flick",
+   "position": [
+    0.09818,
+    -0.0178,
+    0.82377
+   ],
+   "pivot_position": [
+    0.09326,
+    -0.0178,
+    0.81623
+   ],
+   "surface_offset_m": 0.009,
+   "approach": [
+    0.54625,
+    0.0,
+    0.83762
+   ],
+   "joint_axis": [
+    0.0,
+    -1.0,
+    0.0
+   ],
+   "jaw_axis": [
+    -0.83762,
+    0.0,
+    0.54625
+   ],
+   "travel": 0.012,
+   "grip": false,
+   "joint": "mcb_6_joint",
+   "limits": [
+    -0.4,
+    0.4
+   ],
+   "model_name": "mcb_6",
+   "target_state": "on",
+   "motion_direction": "up"
+  },
+  {
+   "name": "mcb_7",
+   "kind": "breaker",
+   "action": "flick",
+   "position": [
+    0.09818,
+    -0.03582,
+    0.82377
+   ],
+   "pivot_position": [
+    0.09326,
+    -0.03582,
+    0.81623
+   ],
+   "surface_offset_m": 0.009,
+   "approach": [
+    0.54625,
+    0.0,
+    0.83762
+   ],
+   "joint_axis": [
+    0.0,
+    -1.0,
+    0.0
+   ],
+   "jaw_axis": [
+    -0.83762,
+    0.0,
+    0.54625
+   ],
+   "travel": 0.012,
+   "grip": false,
+   "joint": "mcb_7_joint",
+   "limits": [
+    -0.4,
+    0.4
+   ],
+   "model_name": "mcb_7",
+   "target_state": "on",
+   "motion_direction": "up"
+  },
+  {
+   "name": "mcb_8",
+   "kind": "breaker",
+   "action": "flick",
+   "position": [
+    0.09818,
+    -0.05384,
+    0.82377
+   ],
+   "pivot_position": [
+    0.09326,
+    -0.05384,
+    0.81623
+   ],
+   "surface_offset_m": 0.009,
+   "approach": [
+    0.54625,
+    0.0,
+    0.83762
+   ],
+   "joint_axis": [
+    0.0,
+    -1.0,
+    0.0
+   ],
+   "jaw_axis": [
+    -0.83762,
+    0.0,
+    0.54625
+   ],
+   "travel": 0.012,
+   "grip": false,
+   "joint": "mcb_8_joint",
+   "limits": [
+    -0.4,
+    0.4
+   ],
+   "model_name": "mcb_8",
+   "target_state": "on",
+   "motion_direction": "up"
+  },
+  {
+   "name": "mcb_9",
+   "kind": "breaker",
+   "action": "flick",
+   "position": [
+    0.09818,
+    -0.07186,
+    0.82377
+   ],
+   "pivot_position": [
+    0.09326,
+    -0.07186,
+    0.81623
+   ],
+   "surface_offset_m": 0.009,
+   "approach": [
+    0.54625,
+    0.0,
+    0.83762
+   ],
+   "joint_axis": [
+    0.0,
+    -1.0,
+    0.0
+   ],
+   "jaw_axis": [
+    -0.83762,
+    0.0,
+    0.54625
+   ],
+   "travel": 0.012,
+   "grip": false,
+   "joint": "mcb_9_joint",
+   "limits": [
+    -0.4,
+    0.4
+   ],
+   "model_name": "mcb_9",
+   "target_state": "on",
+   "motion_direction": "up"
+  },
+  {
+   "name": "mcb_10",
+   "kind": "breaker",
+   "action": "flick",
+   "position": [
+    0.09818,
+    -0.08988,
+    0.82377
+   ],
+   "pivot_position": [
+    0.09326,
+    -0.08988,
+    0.81623
+   ],
+   "surface_offset_m": 0.009,
+   "approach": [
+    0.54625,
+    0.0,
+    0.83762
+   ],
+   "joint_axis": [
+    0.0,
+    -1.0,
+    0.0
+   ],
+   "jaw_axis": [
+    -0.83762,
+    0.0,
+    0.54625
+   ],
+   "travel": 0.012,
+   "grip": false,
+   "joint": "mcb_10_joint",
+   "limits": [
+    -0.4,
+    0.4
+   ],
+   "model_name": "mcb_10",
+   "target_state": "on",
+   "motion_direction": "up"
+  },
+  {
+   "name": "mcb_11",
+   "kind": "breaker",
+   "action": "flick",
+   "position": [
+    0.09818,
+    -0.1079,
+    0.82377
+   ],
+   "pivot_position": [
+    0.09326,
+    -0.1079,
+    0.81623
+   ],
+   "surface_offset_m": 0.009,
+   "approach": [
+    0.54625,
+    0.0,
+    0.83762
+   ],
+   "joint_axis": [
+    0.0,
+    -1.0,
+    0.0
+   ],
+   "jaw_axis": [
+    -0.83762,
+    0.0,
+    0.54625
+   ],
+   "travel": 0.012,
+   "grip": false,
+   "joint": "mcb_11_joint",
+   "limits": [
+    -0.4,
+    0.4
+   ],
+   "model_name": "mcb_11",
+   "target_state": "on",
+   "motion_direction": "up"
+  },
+  {
+   "name": "mcb_12",
+   "kind": "breaker",
+   "action": "flick",
+   "position": [
+    0.09818,
+    -0.12592,
+    0.82377
+   ],
+   "pivot_position": [
+    0.09326,
+    -0.12592,
+    0.81623
+   ],
+   "surface_offset_m": 0.009,
+   "approach": [
+    0.54625,
+    0.0,
+    0.83762
+   ],
+   "joint_axis": [
+    0.0,
+    -1.0,
+    0.0
+   ],
+   "jaw_axis": [
+    -0.83762,
+    0.0,
+    0.54625
+   ],
+   "travel": 0.012,
+   "grip": false,
+   "joint": "mcb_12_joint",
+   "limits": [
+    -0.4,
+    0.4
+   ],
+   "model_name": "mcb_12",
+   "target_state": "on",
+   "motion_direction": "up"
+  },
+  {
+   "name": "mcb_13",
+   "kind": "breaker",
+   "action": "flick",
+   "position": [
+    0.09818,
+    -0.14394,
+    0.82377
+   ],
+   "pivot_position": [
+    0.09326,
+    -0.14394,
+    0.81623
+   ],
+   "surface_offset_m": 0.009,
+   "approach": [
+    0.54625,
+    0.0,
+    0.83762
+   ],
+   "joint_axis": [
+    0.0,
+    -1.0,
+    0.0
+   ],
+   "jaw_axis": [
+    -0.83762,
+    0.0,
+    0.54625
+   ],
+   "travel": 0.012,
+   "grip": false,
+   "joint": "mcb_13_joint",
+   "limits": [
+    -0.4,
+    0.4
+   ],
+   "model_name": "mcb_13",
+   "target_state": "on",
+   "motion_direction": "up"
+  },
+  {
+   "name": "rotary_control_switch_0",
+   "kind": "disconnect",
+   "action": "turn",
+   "position": [
+    -0.05412,
+    -0.0475,
+    0.94099
+   ],
+   "pivot_position": [
+    -0.0705,
+    -0.0475,
+    0.91586
+   ],
+   "surface_offset_m": 0.03,
+   "approach": [
+    0.54625,
+    0.0,
+    0.83762
+   ],
+   "joint_axis": [
+    0.54625,
+    0.0,
+    0.83762
+   ],
+   "jaw_axis": [
+    -0.83762,
+    0.0,
+    0.54625
+   ],
+   "travel": 1.5708,
+   "grip": true,
+   "joint": "rotary_control_switch_0_joint",
+   "limits": [
+    0.0,
+    1.5708
+   ],
+   "model_name": "rotary_control_switch_0"
+  },
+  {
+   "name": "rotary_control_switch_1",
+   "kind": "disconnect",
+   "action": "turn",
+   "position": [
+    -0.05412,
+    -0.1175,
+    0.94099
+   ],
+   "pivot_position": [
+    -0.0705,
+    -0.1175,
+    0.91586
+   ],
+   "surface_offset_m": 0.03,
+   "approach": [
+    0.54625,
+    0.0,
+    0.83762
+   ],
+   "joint_axis": [
+    0.54625,
+    0.0,
+    0.83762
+   ],
+   "jaw_axis": [
+    -0.83762,
+    0.0,
+    0.54625
+   ],
+   "travel": 1.5708,
+   "grip": true,
+   "joint": "rotary_control_switch_1_joint",
+   "limits": [
+    0.0,
+    1.5708
+   ],
+   "model_name": "rotary_control_switch_1"
+  },
+  {
+   "name": "rotary_switch_0",
+   "kind": "rotary",
+   "action": "turn",
+   "position": [
+    0.01896,
+    0.12,
+    0.88737
+   ],
+   "pivot_position": [
+    0.0053,
+    0.12,
+    0.86643
+   ],
+   "surface_offset_m": 0.025,
+   "approach": [
+    0.54625,
+    0.0,
+    0.83762
+   ],
+   "joint_axis": [
+    0.54625,
+    0.0,
+    0.83762
+   ],
+   "jaw_axis": [
+    -0.83762,
+    0.0,
+    0.54625
+   ],
+   "travel": 1.0472,
+   "grip": true,
+   "joint": "rotary_switch_0_joint",
+   "limits": [
+    -1.5708,
+    1.5708
+   ],
+   "model_name": "rotary_switch_0"
+  },
+  {
+   "name": "rotary_switch_1",
+   "kind": "rotary",
+   "action": "turn",
+   "position": [
+    0.01896,
+    0.06,
+    0.88737
+   ],
+   "pivot_position": [
+    0.0053,
+    0.06,
+    0.86643
+   ],
+   "surface_offset_m": 0.025,
+   "approach": [
+    0.54625,
+    0.0,
+    0.83762
+   ],
+   "joint_axis": [
+    0.54625,
+    0.0,
+    0.83762
+   ],
+   "jaw_axis": [
+    -0.83762,
+    0.0,
+    0.54625
+   ],
+   "travel": 1.0472,
+   "grip": true,
+   "joint": "rotary_switch_1_joint",
+   "limits": [
+    -1.5708,
+    1.5708
+   ],
+   "model_name": "rotary_switch_1"
+  },
+  {
+   "name": "rotary_switch_2",
+   "kind": "rotary",
+   "action": "turn",
+   "position": [
+    0.01896,
+    0.0,
+    0.88737
+   ],
+   "pivot_position": [
+    0.0053,
+    0.0,
+    0.86643
+   ],
+   "surface_offset_m": 0.025,
+   "approach": [
+    0.54625,
+    0.0,
+    0.83762
+   ],
+   "joint_axis": [
+    0.54625,
+    0.0,
+    0.83762
+   ],
+   "jaw_axis": [
+    -0.83762,
+    0.0,
+    0.54625
+   ],
+   "travel": 1.0472,
+   "grip": true,
+   "joint": "rotary_switch_2_joint",
+   "limits": [
+    -1.5708,
+    1.5708
+   ],
+   "model_name": "rotary_switch_2"
+  },
+  {
+   "name": "rotary_switch_3",
+   "kind": "rotary",
+   "action": "turn",
+   "position": [
+    0.01896,
+    -0.06,
+    0.88737
+   ],
+   "pivot_position": [
+    0.0053,
+    -0.06,
+    0.86643
+   ],
+   "surface_offset_m": 0.025,
+   "approach": [
+    0.54625,
+    0.0,
+    0.83762
+   ],
+   "joint_axis": [
+    0.54625,
+    0.0,
+    0.83762
+   ],
+   "jaw_axis": [
+    -0.83762,
+    0.0,
+    0.54625
+   ],
+   "travel": 1.0472,
+   "grip": true,
+   "joint": "rotary_switch_3_joint",
+   "limits": [
+    -1.5708,
+    1.5708
+   ],
+   "model_name": "rotary_switch_3"
+  },
+  {
+   "name": "rotary_switch_4",
+   "kind": "rotary",
+   "action": "turn",
+   "position": [
+    0.01896,
+    -0.12,
+    0.88737
+   ],
+   "pivot_position": [
+    0.0053,
+    -0.12,
+    0.86643
+   ],
+   "surface_offset_m": 0.025,
+   "approach": [
+    0.54625,
+    0.0,
+    0.83762
+   ],
+   "joint_axis": [
+    0.54625,
+    0.0,
+    0.83762
+   ],
+   "jaw_axis": [
+    -0.83762,
+    0.0,
+    0.54625
+   ],
+   "travel": 1.0472,
+   "grip": true,
+   "joint": "rotary_switch_4_joint",
+   "limits": [
+    -1.5708,
+    1.5708
+   ],
+   "model_name": "rotary_switch_4"
+  },
+  {
+   "name": "push_button_0",
+   "kind": "button",
+   "action": "press",
+   "position": [
+    0.17732,
+    -0.08,
+    0.76499
+   ],
+   "pivot_position": [
+    0.17295,
+    -0.08,
+    0.75829
+   ],
+   "surface_offset_m": 0.008,
+   "approach": [
+    0.54625,
+    0.0,
+    0.83762
+   ],
+   "joint_axis": [
+    -0.54625,
+    0.0,
+    -0.83762
+   ],
+   "jaw_axis": [
+    0.0,
+    -1.0,
+    0.0
+   ],
+   "travel": 0.0025,
+   "grip": false,
+   "joint": "push_button_0_joint",
+   "limits": [
+    0.0,
+    0.0025
+   ],
+   "model_name": "push_button_0"
+  },
+  {
+   "name": "push_button_1",
+   "kind": "button",
+   "action": "press",
+   "position": [
+    0.17732,
+    -0.04,
+    0.76499
+   ],
+   "pivot_position": [
+    0.17295,
+    -0.04,
+    0.75829
+   ],
+   "surface_offset_m": 0.008,
+   "approach": [
+    0.54625,
+    0.0,
+    0.83762
+   ],
+   "joint_axis": [
+    -0.54625,
+    0.0,
+    -0.83762
+   ],
+   "jaw_axis": [
+    0.0,
+    -1.0,
+    0.0
+   ],
+   "travel": 0.0025,
+   "grip": false,
+   "joint": "push_button_1_joint",
+   "limits": [
+    0.0,
+    0.0025
+   ],
+   "model_name": "push_button_1"
+  },
+  {
+   "name": "push_button_2",
+   "kind": "button",
+   "action": "press",
+   "position": [
+    0.17732,
+    0.0,
+    0.76499
+   ],
+   "pivot_position": [
+    0.17295,
+    0.0,
+    0.75829
+   ],
+   "surface_offset_m": 0.008,
+   "approach": [
+    0.54625,
+    0.0,
+    0.83762
+   ],
+   "joint_axis": [
+    -0.54625,
+    0.0,
+    -0.83762
+   ],
+   "jaw_axis": [
+    0.0,
+    -1.0,
+    0.0
+   ],
+   "travel": 0.0025,
+   "grip": false,
+   "joint": "push_button_2_joint",
+   "limits": [
+    0.0,
+    0.0025
+   ],
+   "model_name": "push_button_2"
+  },
+  {
+   "name": "push_button_3",
+   "kind": "button",
+   "action": "press",
+   "position": [
+    0.17732,
+    0.04,
+    0.76499
+   ],
+   "pivot_position": [
+    0.17295,
+    0.04,
+    0.75829
+   ],
+   "surface_offset_m": 0.008,
+   "approach": [
+    0.54625,
+    0.0,
+    0.83762
+   ],
+   "joint_axis": [
+    -0.54625,
+    0.0,
+    -0.83762
+   ],
+   "jaw_axis": [
+    0.0,
+    -1.0,
+    0.0
+   ],
+   "travel": 0.0025,
+   "grip": false,
+   "joint": "push_button_3_joint",
+   "limits": [
+    0.0,
+    0.0025
+   ],
+   "model_name": "push_button_3"
+  },
+  {
+   "name": "push_button_4",
+   "kind": "button",
+   "action": "press",
+   "position": [
+    0.17732,
+    0.08,
+    0.76499
+   ],
+   "pivot_position": [
+    0.17295,
+    0.08,
+    0.75829
+   ],
+   "surface_offset_m": 0.008,
+   "approach": [
+    0.54625,
+    0.0,
+    0.83762
+   ],
+   "joint_axis": [
+    -0.54625,
+    0.0,
+    -0.83762
+   ],
+   "jaw_axis": [
+    0.0,
+    -1.0,
+    0.0
+   ],
+   "travel": 0.0025,
+   "grip": false,
+   "joint": "push_button_4_joint",
+   "limits": [
+    0.0,
+    0.0025
+   ],
+   "model_name": "push_button_4"
+  }
+ ]
+}

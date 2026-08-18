@@ -1,0 +1,255 @@
+# ============================================================================
+# ARIES joystick teleop — master speed / motion tuning file
+# ============================================================================
+#
+# Every knob that decides HOW FAST the arm and gripper move under joystick
+# control, in one place. Loaded AFTER gamepad.yaml, so the values here win
+# over the copies still sitting in that file (ROS 2 applies parameter files
+# left to right; the last one to set a key decides it).
+#
+# gamepad.yaml keeps what this file deliberately does not touch: button and
+# axis mappings, topic names, joint limits, frame names.
+#
+# Nothing here changes behaviour on its own — the values below are the ones
+# the system already runs with. Edit them to retune.
+#
+#   Which node reads what
+#     rebel_servo_teleop_gamepad   joystick_control_mode:=servo       (default)
+#     rebel_movegroup_joystick     joystick_control_mode:=move_group
+#     Gripper block                both — the two nodes share it
+#
+#   Clamp ranges below are enforced in C++ at
+#   src/rebel_servo_teleop_gamepad.cpp:200-215. A value outside the range is
+#   silently pulled back to the edge, not rejected, so it will look like the
+#   parameter was ignored.
+#
+#   For scale: config/joint_limits.yaml rates joints 1-6 at 1.5 rad/s, so the
+#   0.28 rad/s ceiling below runs the arm at ~19% of rated speed.
+# ============================================================================
+
+
+# ----------------------------------------------------------------------------
+# ARM — servo mode (default)
+# ----------------------------------------------------------------------------
+# Node computes joint velocities itself (damped-least-squares Jacobian) and
+# publishes straight to rebel_arm_trajectory_controller/joint_trajectory.
+/**/rebel_servo_teleop_gamepad:
+  ros__parameters:
+
+    # --- Full-stick speeds ---------------------------------------------------
+    # Analog: output is proportional to stick deflection past the deadzone,
+    # so these are the values reached at 100% deflection only.
+    # THESE are what set the speed in Cartesian mode, and therefore what sets
+    # the release overshoot. NOT max_joint_velocity — that is only a ceiling,
+    # and measurement showed it is not normally reached: halving it from 0.48
+    # to 0.28 left the release speed unchanged (0.218 -> 0.239 rad/s) because
+    # the Jacobian solution was already below both values. Joint speeds were
+    # even observed above 0.28 with the cap set to 0.28.
+    #
+    # Overshoot = release speed * ~0.25 s (the arm's own stopping time), so
+    # halving these halves the overshoot. Restored to the values that were in
+    # use before the speed increase that prompted the overshoot complaint.
+    linear_scale: 0.10          # m/s    TCP translate      [clamp 0.01 - 0.20]
+    angular_scale: 0.18         # rad/s  TCP rotate (~10°/s) [clamp 0.02 - 0.80]
+    joint_scale: 0.38           # rad/s  per joint, JOINT mode only (RT)
+                                #                            [clamp 0.01 - 0.60]
+
+    # Set true to make any deflection past the deadzone command FULL speed
+    # (bang-bang). Off, because it makes fine alignment near a grasp unusable.
+    constant_speed_mode: false
+
+    # Stick travel ignored before motion starts. Also the release threshold.
+    deadzone: 0.04
+
+    # --- Hard ceiling --------------------------------------------------------
+    # Applies in BOTH cartesian and joint mode, after the Jacobian solve. If
+    # any joint exceeds it the whole velocity vector is scaled down uniformly,
+    # which preserves direction but means that near a singularity or a
+    # stretched-out pose the TCP moves visibly slower than linear_scale.
+    # Raising linear_scale without raising this achieves nothing.
+    # A CEILING, not the speed setting, and NOT the lever for overshoot —
+    # measured: changing it 0.48 -> 0.28 left the release speed unchanged
+    # (0.218 -> 0.239 rad/s) because the Cartesian solution rarely reaches it.
+    # Use linear_scale / angular_scale above to change how fast the arm moves.
+    #
+    # When you let go, the arm keeps travelling for ~0.25 s regardless: ~75 ms
+    # transport delay plus the ReBeL's own firmware deceleration, neither
+    # reachable from ROS (the driver's write path applies no ramp, only a
+    # 0.15 deg/s deadband). So overshoot = release speed * ~0.25 s, and the
+    # only way to shrink it is to release at a lower speed.
+    #
+    # Tried against the overshoot and measured as no better or worse: shorter
+    # lookahead, a release decel ramp, latching the hold target, lowering this
+    # ceiling, and raising the JTC p gain (worse — see the DO NOT RAISE p note
+    # in launch/aries_hardware.launch.py).
+    max_joint_velocity: 0.28    # rad/s              [clamp 0.05 - 0.60]
+
+    # --- Ramps ---------------------------------------------------------------
+    # Asymmetric on purpose: gentle start, near-instant stop. There is no
+    # smoothing filter on the servo side (use_smoothing: false in servo.yaml)
+    # because a filter there adds onset lag — the arm would start moving after
+    # the stick push instead of during it. Stopping is handled here instead.
+    max_joint_accel: 1.8        # rad/s^2  ~0.16 s from rest to 0.28 rad/s
+                                #                    [clamp 0.2 - 12.0]
+    max_joint_decel: 16.0       # rad/s^2  ~18 ms to full stop
+                                #                    [clamp 0.2 - 30.0]
+    joint_velocity_deadband: 0.004   # rad/s below this is snapped to zero
+
+    # --- Command stream ------------------------------------------------------
+    command_publish_rate_hz: 80.0    # also sets dt for the gripper stepper
+                                     #               [clamp 30.0 - 100.0]
+    joy_timeout_sec: 0.35            # no /joy for this long -> stop
+
+    # --- Stop / release behaviour --------------------------------------------
+    # WARNING: the five keys below are NOT READ BY ANY NODE. Verified by
+    # grepping every .cpp/.py in src/ — nothing declares them. They are kept
+    # only because they were already in gamepad.yaml; editing them does
+    # nothing. The release ramp they look like they control is actually
+    # max_joint_decel, applied in hardZeroStop().
+    stop_ramp_duration_sec: 0.06            # dead
+    stop_ramp_steps: 10                     # dead
+    stop_hold_cycles: 2                     # dead
+    # Cycles of "hold at the latched release position" published after release
+    # before the node goes silent (silence is deliberate, so RViz/MoveIt can
+    # drive the same controller). At 80 Hz this is cycles/80 seconds.
+    # Measured stopping time on the real arm is ~0.27 s, so 8 cycles (100 ms)
+    # went silent well before the arm had settled. 24 = 300 ms covers it.
+    stop_zero_cycles: 24
+    cartesian_release_deadzone: 0.04        # dead
+    cartesian_stop_ramp_duration_sec: 0.0   # dead
+    cartesian_hard_stop_cycles: 3           # dead
+
+    # This one IS live and is the real release ramp:
+    #   max_joint_decel (above) sets how fast the command winds down on
+    #   release. 16 rad/s^2 brings 0.48 rad/s to rest in ~30 ms / 3 cycles.
+    #   Raise it for a crisper stop, lower it for a softer one.
+
+    # --- Solver / lookahead --------------------------------------------------
+    # Damping is now ramped in only as the arm approaches a singularity, rather
+    # than applied at every pose. A constant lambda attenuates each singular
+    # direction by s^2/(s^2 + lambda^2), which is uneven across directions, so
+    # the arm followed a twist that pointed somewhere other than the commanded
+    # one — a pure "straight up" push also drifted sideways, and how much
+    # depended on pose. Above dls_sigma_threshold the solve is now undamped and
+    # tracks the command exactly.
+    #   raise dls_sigma_threshold -> damping starts earlier, smoother near
+    #     singularities, slightly less exact tracking
+    #   lower it -> crisper tracking, less margin before a singularity
+    dls_lambda: 0.10            # MAX damping, reached at a true singularity
+                                #                    [clamp 0.001 - 1.0]
+    dls_sigma_threshold: 0.20   # smallest singular value where damping begins
+                                #                    [clamp 0.0 - 1.0]
+    joint_limit_margin: 0.05    # rad before a limit that motion into it stops
+                                #                    [clamp 0.0 - 0.20]
+    collision_preview_sec: 0.16 # how far ahead the guard checks
+                                #                    [clamp 0.04 - 0.40]
+    # When already touching in the model, a slow command is allowed only if
+    # its preview reduces total penetration by at least this much. This keeps
+    # a genuine escape direction available but stops tangential bucket motion
+    # from scraping along the rover body.
+    collision_escape_min_improvement: 0.0005 # m      [clamp 0.0001 - 0.010]
+    trajectory_horizon_sec: 0.025           # dead (see warning above)
+    trajectory_preview_sec: 0.025           # dead
+    hold_time_sec: 0.030                    # dead
+    # THESE TWO SET THE POST-RELEASE SETTLE. Each cycle the node commands
+    #   position = measured_position + velocity * velocity_point_N_sec
+    # so the position command deliberately LEADS the arm by up to
+    # velocity_point_2_sec of travel — that lead is what keeps motion smooth.
+    # When you let go, the arm still has that lead to run out, and the
+    # stop path replaces the velocity with exactly zero and follows live
+    # measured position, so no projected endpoint asks the arm to continue or
+    # return. During motion, the maximum trajectory lead is approximately
+    #   velocity * velocity_point_2_sec
+    # so it grows in direct proportion to speed:
+    #   0.28 rad/s * 0.080 = 0.022 rad (~1.3 deg)   <- old speeds
+    #   0.48 rad/s * 0.080 = 0.038 rad (~2.2 deg)   <- speeds as raised above
+    # Shortened to hold the settle near its original size at the higher speed.
+    # Do not go far below these: commands arrive every 12.5 ms, and if the
+    # trajectory is shorter than the gap between commands the motion goes
+    # jerky instead of smooth.
+    velocity_point_1_sec: 0.025 #                    [clamp 0.015 - 0.10]
+    velocity_point_2_sec: 0.050 #      [clamp velocity_point_1 + 0.01 - 0.20]
+
+    # --- Gripper (see shared block below; repeated so this node is complete) --
+    gripper_speed: 2.00
+    max_gripper_command_step: 0.04
+    gripper_trajectory_duration: 0.10
+    gripper_open_position: -1.57
+    gripper_closed_position: 0.07
+
+
+# ----------------------------------------------------------------------------
+# ARM — move_group mode  (joystick_control_mode:=move_group)
+# ----------------------------------------------------------------------------
+# Not velocity control at all. Each stick direction fires a discrete planned
+# nudge through /move_action, using the same planning, collision checking and
+# execution path as RViz Plan + Execute. Speed is therefore step size / period,
+# and real throughput is gated by how fast planning returns.
+/**/rebel_movegroup_joystick:
+  ros__parameters:
+
+    # --- Step size -----------------------------------------------------------
+    cartesian_step_m: 0.025     # m    per nudge, cartesian mode
+    angular_step_rad: 0.10      # rad  per nudge, cartesian mode
+    joint_step_rad: 0.07        # rad  per nudge, joint mode
+
+    # --- Cadence -------------------------------------------------------------
+    # 0.025 m every 0.20 s = ~0.125 m/s nominal if planning keeps up.
+    command_period_sec: 0.20
+    success_cooldown_sec: 0.05
+    failure_cooldown_sec: 0.80  # dominates once you push into an unreachable
+                                # direction — this is why it feels sticky there
+
+    # --- Execution -----------------------------------------------------------
+    # Fraction of the joint_limits.yaml maxima the planned trajectory may use.
+    velocity_scale: 0.35
+    acceleration_scale: 0.35
+
+    # --- Planning budget -----------------------------------------------------
+    allowed_planning_time: 2.0
+    num_planning_attempts: 5
+    position_goal_tolerance: 0.015
+    orientation_goal_tolerance: 0.15
+    joint_goal_tolerance: 0.025
+    joint_limit_margin: 0.05
+
+    # Node's own default is true; kept false to match servo mode.
+    constant_speed_mode: false
+    deadzone: 0.04
+
+    # --- Gripper (same values as servo mode — keep the two in sync) ----------
+    gripper_speed: 2.00
+    max_gripper_command_step: 0.04
+    gripper_trajectory_duration: 0.10
+    gripper_open_position: -1.57
+    gripper_closed_position: 0.07
+
+
+# ============================================================================
+# GRIPPER — reference
+# ============================================================================
+# The gripper block is duplicated into both node sections above because a ROS 2
+# parameter file cannot share a block between two named nodes. Change one,
+# change the other.
+#
+#   Hold X (button 2) = open, hold B (button 1) = close
+#     Per cycle the commanded position moves by
+#       min(max_gripper_command_step, gripper_speed * dt)
+#     At command_publish_rate_hz 80 -> dt = 0.0125 s -> min(0.04, 0.025)
+#     = 0.025 rad, so gripper_speed is the binding limit and the jaws really do
+#     move at 2.0 rad/s. max_gripper_command_step only starts to bite below
+#     50 Hz, where it exists to stop a slow loop from commanding a large jump.
+#
+#   Press A (button 0) = toggle
+#     Sends the whole move as one trajectory of duration
+#       max(gripper_trajectory_duration, distance / gripper_speed)
+#
+#   Travel: gripper_open_position -1.57 -> gripper_closed_position 0.07
+#           = 1.64 rad on gripper_gear_left_joint
+#           -> a full stroke takes ~0.82 s either way.
+#
+#   These are joint positions on the four-bar's driven joint, not jaw
+#   millimetres. The hardware gripper has no position sensor, so /joint_states
+#   only echoes the command — gripper_speed is an open-loop request, and the
+#   real jaws are slower than this whenever they are loaded.
+# ============================================================================

@@ -1,0 +1,146 @@
+<?xml version="1.0"?>
+<!-- igus_rebel.control.xacro -->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+    <xacro:macro name="igus_rebel_control" params="arm_id hardware_protocol arm_hardware_protocol:='' gripper_hardware_protocol:='' serial_port:='/dev/ttyACM0'">
+        <xacro:macro name="joint_control" params="joint">
+            <joint name="${joint}">
+                <xacro:if value="${arm_hardware_protocol == 'mock_hardware' or (arm_hardware_protocol == '' and hardware_protocol == 'mock_hardware')}">
+                    <command_interface name="position" />
+                </xacro:if>
+                <xacro:if value="${arm_hardware_protocol == 'gazebo' or (arm_hardware_protocol == '' and hardware_protocol == 'gazebo')}">
+                    <command_interface name="position" />
+                </xacro:if>
+                <xacro:if value="${arm_hardware_protocol == 'rebel' or (arm_hardware_protocol == '' and hardware_protocol == 'rebel')}">
+                    <command_interface name="velocity" />
+                </xacro:if>
+                <state_interface name="position" />
+                <state_interface name="velocity" />
+            </joint>
+        </xacro:macro>
+
+        <ros2_control name="${arm_id}_controller" type="system">
+            <hardware>
+                <xacro:if value="${arm_hardware_protocol == 'mock_hardware' or (arm_hardware_protocol == '' and hardware_protocol == 'mock_hardware')}">
+                    <plugin>mock_components/GenericSystem</plugin>
+                </xacro:if>
+                <xacro:if value="${arm_hardware_protocol == 'gazebo' or (arm_hardware_protocol == '' and hardware_protocol == 'gazebo')}">
+                    <plugin>gz_ros2_control/GazeboSimSystem</plugin>
+                    <!-- position_proportional_gain does NOT belong here.
+                         gz_ros2_control ignores <param> tags in <hardware> for
+                         this setting and declares it as a ROS parameter on its
+                         own gz_ros_control node, so the 5.0 that used to sit
+                         here never applied — the package default of 0.1 ran
+                         instead and the arm tracked joystick teleop at an
+                         eighth of the commanded joint velocity. Verify with
+                           ros2 param get /gz_ros_control position_proportional_gain
+                         It is now set, with the derivation and the stability
+                         ceiling, in aries_moveit/config/ros2_controllers.yaml,
+                         which this plugin block already loads below. -->
+                </xacro:if>
+                <xacro:if value="${arm_hardware_protocol == 'rebel' or (arm_hardware_protocol == '' and hardware_protocol == 'rebel')}">
+                    <plugin>Igus/Rebel</plugin>
+                </xacro:if>
+            </hardware>
+            <xacro:joint_control joint="joint1" />
+            <xacro:joint_control joint="joint2" />
+            <xacro:joint_control joint="joint3" />
+            <xacro:joint_control joint="joint4" />
+            <xacro:joint_control joint="joint5" />
+            <xacro:joint_control joint="joint6" />
+
+            <xacro:if value="${arm_hardware_protocol == 'gazebo' or (arm_hardware_protocol == '' and hardware_protocol == 'gazebo')}">
+                <joint name="gripper_gear_left_joint">
+                    <command_interface name="position" />
+                    <state_interface name="position" />
+                    <state_interface name="velocity" />
+                </joint>
+                <!-- The four-bar followers are READ ONLY here.
+                     They used to carry mimic/multiplier params as well, which
+                     coupled them a SECOND time: sdformat converts the URDF
+                     <mimic> tags in gripper_new.xacro into real SDF <mimic>
+                     constraints (confirmed with `gz sdf -p`), so DART already
+                     enforces q_follower = q_leader inside the solver. Adding
+                     the ros2_control mimic on top makes gz_ros2_control write
+                     a velocity command to each of the same five joints every
+                     cycle, so each DOF carries a hard kinematic constraint and
+                     an independent servo command that know nothing about each
+                     other, both with the joints' 500 N.m effort ceiling behind
+                     them. Two solvers arguing over one DOF is what tears a
+                     linkage apart on screen while every joint is individually
+                     "satisfied".
+                     Keep the constraint (it is solved with the dynamics and
+                     cannot drift) and drop the commands. The state interfaces
+                     stay so the followers still report their measured
+                     positions. -->
+                <joint name="gripper_gear_right_joint">
+                    <state_interface name="position" />
+                    <state_interface name="velocity" />
+                </joint>
+                <joint name="gripper_link_left_joint">
+                    <state_interface name="position" />
+                    <state_interface name="velocity" />
+                </joint>
+                <joint name="gripper_link_right_joint">
+                    <state_interface name="position" />
+                    <state_interface name="velocity" />
+                </joint>
+                <joint name="gripper_bucket_left_joint">
+                    <state_interface name="position" />
+                    <state_interface name="velocity" />
+                </joint>
+                <joint name="gripper_bucket_right_joint">
+                    <state_interface name="position" />
+                    <state_interface name="velocity" />
+                </joint>
+            </xacro:if>
+        </ros2_control>
+
+        <xacro:if value="${gripper_hardware_protocol == 'mock_hardware' or (gripper_hardware_protocol == '' and hardware_protocol == 'mock_hardware')}">
+            <ros2_control name="${arm_id}_gripper_mock" type="system">
+                <hardware>
+                    <plugin>mock_components/GenericSystem</plugin>
+                </hardware>
+
+                <joint name="gripper_gear_left_joint">
+                    <command_interface name="position">
+                        <param name="min">-1.57</param>
+                        <param name="max">0.07</param>
+                    </command_interface>
+                    <state_interface name="position">
+                        <param name="initial_value">-1.57</param>
+                    </state_interface>
+                    <state_interface name="velocity" />
+                </joint>
+            </ros2_control>
+        </xacro:if>
+
+        <xacro:if value="${gripper_hardware_protocol == 'rebel' or (gripper_hardware_protocol == '' and hardware_protocol == 'rebel')}">
+            <ros2_control name="${arm_id}_gripper" type="system">
+                <hardware>
+                    <plugin>teensy_gripper_hardware/TeensyGripperSystem</plugin>
+                    <param name="cmd_topic">/gripper/cmd</param>
+                    <param name="state_topic">/gripper/state</param>
+                    <param name="min_pos">-1.57</param>
+                    <param name="max_pos">0.07</param>
+                </hardware>
+
+                <joint name="gripper_gear_left_joint">
+                    <command_interface name="position" />
+                    <state_interface name="position" />
+                    <state_interface name="velocity" />
+                </joint>
+            </ros2_control>
+        </xacro:if>
+
+        <xacro:if value="${arm_hardware_protocol == 'gazebo' or (arm_hardware_protocol == '' and hardware_protocol == 'gazebo')}">
+            <gazebo>
+                <plugin filename="libgz_ros2_control-system.so" name="gz_ros2_control::GazeboSimROS2ControlPlugin">
+                    <parameters>$(find aries_moveit)/config/ros2_controllers.yaml</parameters>
+                    <robot_param>robot_description</robot_param>
+                    <robot_param_node>robot_state_publisher</robot_param_node>
+                    <controller_manager_name>controller_manager</controller_manager_name>
+                </plugin>
+            </gazebo>
+        </xacro:if>
+    </xacro:macro>
+</robot>

@@ -1,0 +1,1 @@
+qos_overrides./camera/camera/depth/color/points.publisher.reliability: best_effort

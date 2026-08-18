@@ -1,0 +1,28 @@
+# Python dependencies for the obstacle_detection package, beyond the ROS2
+# packages already declared in package.xml (rclpy, sensor_msgs,
+# sensor_msgs_py, visualization_msgs, pcl_ros, etc).
+#
+# IMPORTANT: this system's Python is externally-managed (PEP 668) --
+# `pip install -r requirements.txt` against the system interpreter will
+# fail with "externally-managed-environment". Use the install method noted
+# next to each package instead.
+
+# --- Core, used by obstacle_clustering.py (the active detection pipeline) ---
+# numpy: install system-wide via apt (already present as a transitive
+#   dependency of ROS2/rclpy on this machine).
+numpy
+
+# scikit-learn: install via `sudo apt-get install -y python3-sklearn`,
+#   not pip -- this is what's actually installed on this machine.
+scikit-learn
+
+# --- Optional, used only by obstacle_filter_gpu.py (GPU/Open3D experiment,
+#     not part of the current active pipeline -- CPU pipeline was kept
+#     instead after GPU showed no real speedup) ---
+# open3d: requires a dedicated venv, since it can't share rclpy's system
+#   Python environment. Set up with:
+#     python3 -m venv --system-site-packages ~/jazzy_ws/venv_open3d
+#     ~/jazzy_ws/venv_open3d/bin/pip install open3d
+#   Run GPU node scripts with ~/jazzy_ws/venv_open3d/bin/python3, not
+#   `ros2 run` (which uses the system interpreter and can't see open3d).
+open3d

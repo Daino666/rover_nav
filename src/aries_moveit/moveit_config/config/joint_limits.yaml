@@ -1,0 +1,71 @@
+# joint_limits.yaml allows the dynamics properties specified in the URDF to be overwritten or augmented as needed
+# Specific joint properties can be changed with the keys [max_position, min_position, max_velocity, max_acceleration]
+# Joint limits can be turned off with [has_velocity_limits, has_acceleration_limits]
+# REBEL-6DOF-03 factory limits from the official V15.0.2 robot definition.
+# The planning velocity of 1.5 rad/s (85.9 deg/s) remains below the factory
+# fast-profile limit of 90 deg/s.
+# How long the planning scene monitor waits for TF when caching link poses for
+# time-synchronized camera transforms. The default 0.05s misses frames when
+# the simulation runs below real time.
+shape_transform_cache_lookup_wait_time: 0.3
+
+joint_limits:
+  joint1:
+    has_position_limits: true
+    min_position: -3.12413936106985
+    max_position: 3.12413936106985
+    has_velocity_limits: true
+    max_velocity: 1.5
+    has_acceleration_limits: true
+    max_acceleration: 5.0
+  joint2:
+    has_position_limits: true
+    min_position: -1.3962634015954636
+    max_position: 2.443460952792061
+    has_velocity_limits: true
+    max_velocity: 1.5
+    has_acceleration_limits: true
+    max_acceleration: 5.0
+  joint3:
+    has_position_limits: true
+    min_position: -1.3962634015954636
+    max_position: 2.443460952792061
+    has_velocity_limits: true
+    max_velocity: 1.5
+    has_acceleration_limits: true
+    max_acceleration: 5.0
+  joint4:
+    has_position_limits: true
+    min_position: -3.12413936106985
+    max_position: 3.12413936106985
+    has_velocity_limits: true
+    max_velocity: 1.5
+    has_acceleration_limits: true
+    max_acceleration: 5.0
+  joint5:
+    has_position_limits: true
+    min_position: -1.6580627893946132
+    max_position: 1.6580627893946132
+    has_velocity_limits: true
+    max_velocity: 1.5
+    has_acceleration_limits: true
+    max_acceleration: 5.0
+  joint6:
+    has_position_limits: true
+    min_position: -3.12413936106985
+    max_position: 3.12413936106985
+    has_velocity_limits: true
+    max_velocity: 1.5
+    has_acceleration_limits: true
+    max_acceleration: 5.0
+  gripper_gear_left_joint:
+    has_velocity_limits: true
+    max_velocity: 10.0
+    has_acceleration_limits: true
+    max_acceleration: 30.0
+
+cartesian_limits:
+  max_trans_vel: 1.0
+  max_trans_acc: 2.25
+  max_trans_dec: -5.0
+  max_rot_vel: 1.57

@@ -1,0 +1,213 @@
+vision_grasp_node:
+  ros__parameters:
+    # Joint order used by every arm posture below. Values are in radians.
+    pick_home_joint_names:
+      - joint1
+      - joint2
+      - joint3
+      - joint4
+      - joint5
+      - joint6
+
+    # Safe transport/home posture used after lifting a grasped probe and again
+    # after releasing it in the base-mounted box.
+    pick_home_joint_positions:
+      - 0.0
+      - 0.366519
+      - 1.18682
+      - 0.0349066
+      - 1.55334
+      - 1.50098
+
+    # Held-probe transport goal validation. At pick_home the probe hangs
+    # ~0.25 m under the tool, directly over the chassis front, so a long
+    # attached probe puts the goal state itself in collision and MoveGroup
+    # aborts instantly (status 6). Before commanding the transport move, the
+    # node asks /check_state_validity (which sees the attached probe mesh)
+    # whether pick_home is collision-free; if not, it walks the flattened
+    # 6-joint alternatives below and commands the first valid posture.
+    # Defaults: arm extended forward (tool ~(0.56, -0.05, 0.43) in base_link,
+    # probe ahead of the chassis), then the same posture yawed right by 0.9
+    # and 1.5 rad over open ground.
+    transport_goal_validity_check_enabled: true
+    state_validity_service_name: /check_state_validity
+    pick_home_alternative_joint_positions_flat:
+      - 0.0
+      - 1.074
+      - 0.639
+      - 0.0349066
+      - 1.394
+      - 1.50098
+      - -0.9
+      - 1.074
+      - 0.639
+      - 0.0349066
+      - 1.394
+      - 1.50098
+      - -1.5
+      - 1.074
+      - 0.639
+      - 0.0349066
+      - 1.394
+      - 1.50098
+
+    # Enable the pick_home -> box drop -> release -> pick_home sequence.
+    place_in_base_box_after_grasp: true
+
+    # ONLY EDIT THESE THREE BOX VALUES.
+    # Position is the outside box centre in base_link; dimensions are outside
+    # local X/Y/Z lengths in metres; RPY is the box rotation in radians.
+    # Probe dimensions, clearances, top rim, central release zone, lengthwise
+    # probe alignment, marker geometry, and reachable wrist roll are automatic.
+    base_box_center_xyz: [0.003, 0.215, 0.287]
+    base_box_dimensions_xyz: [0.14, 0.20, 0.15]
+    base_box_rpy: [0.0, 0.0, 0.0]
+
+    # Transport/release timing.
+    post_grasp_planning_time_sec: 10.0
+    # Box goals are IK-screened first; keep each remaining OMPL attempt
+    # bounded so a failed release strategy advances within seconds.
+    base_box_planning_time_sec: 3.0
+    base_box_max_planned_candidates: 2
+    base_box_release_wait_sec: 4.0
+    return_pick_home_after_base_box_place: true
+
+    # For a probe that does not fit flat, failed centre-insertion candidates
+    # switch immediately to a bounded tip-only fallback: the tapered endpoint
+    # is targeted 20 mm below the rim while the probe centre and planning link
+    # must remain above it. Known-unreachable centre poses are not handed to
+    # the 10 s planner, and insertion mode never escalates to a position-only
+    # probe-centre goal that could pull the gripper into the box.
+    #
+    # These relaxed rounds remain available only for non-insertion overhead
+    # drop mode.
+    base_box_drop_relaxed_orientation_tolerance_rad: 0.35
+    base_box_drop_final_round_position_only: true
+    base_box_release_axis_tolerance_deg: 12.0
+    base_box_release_axis_tolerance_final_deg: 60.0
+
+    # General retreat home used by non-placement fallback/recovery paths.
+    use_joint_retreat_home: true
+    retreat_home_joint_names:
+      - joint1
+      - joint2
+      - joint3
+      - joint4
+      - joint5
+      - joint6
+    retreat_home_joint_positions:
+      - -0.0523599
+      - 0.244346
+      - 1.41372
+      - 0.0
+      - 1.53589
+      - 1.01229
+
+    joint_goal_tolerance: 0.03
+
+    # Gripper joint positions (rad), configurable here.
+    # The Gazebo URDF provides 0.05 rad of extra model travel beyond these
+    # nominal endpoints so -1.57/0.07 do not coincide with physics hard stops.
+    gripper_open_width: -1.57
+    gripper_close_width: 0.07
+    gripper_preclose_width: -0.75
+    gripper_joint_lower_limit: -1.62
+    gripper_joint_upper_limit: 0.12
+    gripper_joint_limit_margin: 0.05
+
+    # Normal gripper completion requires the full command time plus fresh
+    # feedback at the target. Final close additionally accepts the strictly
+    # bounded, stalled-contact check below. Timeout alone never succeeds.
+    gripper_settle_sec: 0.90
+    gripper_command_duration_sec: 4.00
+    gripper_feedback_available: true
+    gripper_require_feedback_for_completion: true
+    gripper_feedback_max_age_sec: 0.50
+    gripper_goal_tolerance: 0.012
+    # A rigid probe intentionally stops the final close short of its target.
+    # Accept that as contact only after the measured joint has stopped, moved a
+    # substantial distance from open, and the calibrated gap matches the probe.
+    gripper_contact_stall_sec: 0.35
+    gripper_contact_position_epsilon_rad: 0.003
+    gripper_contact_min_closing_travel_rad: 0.20
+    # Gazebo's rigid probe contact repeatedly settles around q=-0.105
+    # (29.4 mm in the calibrated midpoint-gap model) and has been observed as
+    # tight as q=-0.089 (26.75 mm) — physics penetration and off-square
+    # contact read tighter than the true probe width. Keep those stops inside
+    # the bounded contact window so they cancel the over-close action before
+    # the trajectory controller reaches its goal-time abort. (26.75 mm missed
+    # the previous 18 mm window by 0.25 mm and hard-locked a held probe.)
+    gripper_contact_gap_tolerance_m: 0.024
+    # Safety net for stalls OUTSIDE even that window: jaws that stopped with
+    # fresh stationary feedback, big closing travel, well short of the
+    # over-closed target, and a gap clearly above empty-closed (full close
+    # reads 0 mm) are holding SOMETHING. Complete the close without contact
+    # trust instead of hard-locking; the vision lift check must then confirm
+    # a positive lift, and the retry machinery stays armed on a miss.
+    gripper_contact_uncertain_stall_enabled: true
+    gripper_contact_uncertain_min_gap_m: 0.010
+    # Final close deliberately over-closes to gripper_close_width instead of
+    # stopping at the computed contact angle for the ESTIMATED probe width —
+    # a few mm of width error there left the probe loose. The rigid probe
+    # stops the jaws at its true width and the stalled-contact check above
+    # completes the close; with no probe the jaws reach full close and the
+    # lift verification catches the miss. The closing-arc ground guard covers
+    # the full commanded sweep.
+    final_close_full_close: true
+    # Node-owned safety watchdog. Every outgoing action receives a longer JTC
+    # goal-time allowance and is explicitly cancelled when this timeout fires,
+    # preventing GOAL_TOLERANCE_VIOLATED from racing this measured-state check.
+    gripper_confirm_timeout_sec: 12.0
+    # Require action success for ordinary commands. The final close contact
+    # path is the only exception and uses the geometric checks above.
+    gripper_require_action_success_for_completion: true
+
+    # Legacy time-only fallback is disabled.
+    gripper_no_feedback_close_complete_sec: 0.0
+
+    # Whole-process arm completion gate. Every MoveIt/Cartesian action must
+    # succeed AND fresh measured arm feedback must remain at the target for the
+    # configured number of samples before the next stage is allowed to start.
+    arm_require_feedback_for_completion: true
+    arm_feedback_joint_names: [joint1, joint2, joint3, joint4, joint5, joint6]
+    arm_feedback_max_age_sec: 0.50
+    arm_feedback_settle_sec: 0.25
+    arm_feedback_timeout_sec: 5.0
+    arm_feedback_check_period_sec: 0.10
+    arm_feedback_stable_samples: 3
+    arm_joint_confirmation_tolerance_rad: 0.04
+    arm_pose_confirmation_position_tolerance_m: 0.020
+    arm_pose_confirmation_orientation_tolerance_rad: 0.15
+
+    # Camera-to-grasp calibration offset. It is added to every detected 3D
+    # point before that point is transformed from the depth camera frame into
+    # base_link. Units are metres. In a standard ROS optical frame, +X is
+    # image-right, +Y is image-down, and +Z is forward/away from the camera.
+    # Example: [0.010, -0.005, 0.0] means 10 mm right and 5 mm up.
+    grasp_target_offset_camera_xyz_m: [0.0, 0.0, 0.0]
+
+    # Optional multi-view self-calibration. The probe must remain stationary
+    # while the wrist camera moves toward pre-grasp. The estimator solves for a
+    # camera-axis offset that makes all transformed 3D observations agree,
+    # rejects poorly observable/noisy solutions, and applies at most 15 mm in
+    # one sequence. The accepted value is logged for manual YAML persistence.
+    auto_calibrate_camera_offset_enabled: true
+    auto_calibrate_camera_offset_min_samples: 10
+    auto_calibrate_camera_offset_min_rotation_deg: 12.0
+    auto_calibrate_camera_offset_max_condition: 250.0
+    auto_calibrate_camera_offset_max_m: 0.060
+    auto_calibrate_camera_offset_max_rms_m: 0.012
+    auto_calibrate_camera_offset_min_improvement_m: 0.003
+    auto_calibrate_camera_offset_max_step_m: 0.015
+    auto_calibrate_camera_offset_max_samples: 80
+
+    # Robust probe acquisition. A grasp starts only after a consecutive cluster
+    # of high-confidence 3D detections agrees within these limits. The committed
+    # grasp point is the coordinate-wise median, never the last raw frame.
+    target_stability_samples: 6
+    target_stability_max_jump_m: 0.012
+    target_stability_rms_m: 0.005
+    target_filter_window_samples: 9
+    target_filter_outlier_distance_m: 0.025
+    target_stability_max_sample_gap_sec: 0.75
+    target_lock_min_confidence: 0.70

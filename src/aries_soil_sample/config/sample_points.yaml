@@ -1,0 +1,84 @@
+# ============================================================================
+#  THE FILE YOU CONFIGURE.
+#  Where to scoop, how deep, and where to put the sample. Everything else is in
+#  soil_sample_params.yaml, which you should rarely need to open.
+#  Loaded LAST, so these values win.
+#
+#  HEIGHTS ARE NEVER ABSOLUTE. The depth camera measures the ground and every
+#  vertical number below is an offset FROM that measured surface. In the field
+#  the terrain height is unknown, so a hard-coded Z would either scoop air or
+#  drive the bucket into the ground.
+# ============================================================================
+
+soil_sample_node:
+  ros__parameters:
+
+    # ── 1. HOW DEEP (all relative to the detected ground) ──────────────────
+    #
+    #    ─────────────────   start  +30 mm   the arm descends from here
+    #    ─ ─ ─ ─ ─ ─ ─ ─ ─   close  +20 mm   the jaws begin shutting
+    #   ~~~~~~~~~~~~~~~~~~   GROUND   0 mm   measured by the depth camera
+    #    ─────────────────   depth  -30 mm   the bucket ends here
+    #    ═════════════════   limit  -60 mm   hard stop, never exceeded
+    #
+    scoop_start_above_ground_m: 0.060
+    close_start_above_ground_m: 0.030
+    scoop_depth_m: 0.00
+    max_depth_below_ground_m: 0.000
+
+    # ── 2. WHERE TO SCOOP (horizontal only) ────────────────────────────────
+    # DEFAULT: straight down from pick_home. Nothing to configure and nothing to
+    # survey for -- the arm goes home, the camera reads whatever ground is under
+    # it, and the bucket descends into that. The XY comes from pick_home's
+    # forward kinematics at run time, so it follows the posture instead of being
+    # copied out of it and going stale. This is the deployment case: no tray, no
+    # prepared bed, no map.
+    sample_below_home: true
+    # Survey window around that column: wide enough to fit the bucket footprint
+    # and judge the ground around it, narrow enough that the scorer cannot wander
+    # off to a different patch.
+    sample_below_home_halfwidth_m: 0.070
+
+    # The rest of this section only applies when sample_below_home is false.
+    use_fixed_sample_point: false
+    sample_point_xy: [0.470, 0.110]
+    # A configured point still has to pass the same roughness / slope / coverage
+    # gates -- choosing a patch by hand does not make it safe to cut. false lets
+    # the node fall back to automatic selection if it is rejected.
+    sample_point_strict: false
+
+    # Only used when sample_below_home is false; otherwise the region is
+    # recentred on the pick_home column automatically.
+    # MEASURED LIMITS if you do set it by hand:
+    #   x beyond ~0.55 -> no vertical IK at any wrist roll
+    #   negative y     -> no vertical IK either; the arm cannot work that side
+    # so this band is where scooping actually solves. Re-measure if the rover or
+    # the soil moves.
+    work_region_x: [0.42, 0.52]
+    work_region_y: [0.02, 0.18]
+
+    # ── 3. WHERE TO PUT IT (the box on the rover) ──────────────────────────
+    # centre is the GEOMETRIC CENTRE, not the floor: rim = centre_z + dim_z/2.
+    # Every deposit pose is derived from this, so moving the box moves the dump.
+    deposit_box_center_xyz: [0.1516, 0.215, 0.2556]
+    deposit_box_dimensions_xyz: [0.14, 0.2014, 0.08685]
+    deposit_box_rpy: [0.0, 0.0, 0.0]
+    # Narrows the usable opening only; the outer size above is unchanged.
+    deposit_box_wall_thickness_m: 0.006
+
+    # Height above the box RIM at which the jaws open, and how far inside the
+    # opening the dump point must stay. Validated at startup: a box that fails
+    # disables deposit for the run rather than being discovered with a full
+    # bucket.
+    deposit_rim_clearance_m: 0.038
+    deposit_offset_xy: [0.0, 0.0]
+    deposit_edge_margin_m: 0.015
+
+    # A known-good dump POSTURE, tried FIRST: joint values someone has actually
+    # watched the bucket hold over the box cannot be argued out of reach by the
+    # box moving. FK-checked against the box above at run time.
+    deposit_use_joint_posture: true
+    deposit_joint_positions: [1.3090, -0.3665, 1.7977, -0.0175, 1.6755, 2.8099]
+    # If that posture is unusable, a pose is derived from the box and searched
+    # UPWARD to here: tipping from higher still lands in the box.
+    deposit_max_rim_clearance_m: 0.150
