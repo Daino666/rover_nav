@@ -644,37 +644,41 @@ ros2 launch aries_bringup rover_drive.launch.py \
 
 ### Diagnosing a Heading/Mounting Offset
 
-If the rover's fused heading or position doesn't line up with reality (e.g.
-driving physically forward shows up as motion along the wrong axis in
-`/odometry/filtered`), don't guess at a correction — a wrong rotation on the
-`imu_joint` makes it worse, not better. Check it empirically instead:
+The 3DM-GX5-AHRS reports true absolute heading (repeatable across power
+cycles for the same physical orientation, and it correctly tracks manual
+rotation even while unpowered) — confirmed empirically, not something to
+assume. That absolute reading includes the IMU's own fixed mechanical
+mounting rotation relative to the chassis, so raw yaw at boot is whatever
+that combination happens to be (e.g. 25°, or something else entirely), not
+necessarily 0.
+
+`ekf_config.yaml`'s `imu0_relative: true` (under `imu0` — see `## IMU`
+above) fixes this at the fusion level: the yaw fused when the EKF starts
+becomes the zero reference, and every later reading is reported relative to
+it. So "forward" at launch is always yaw=0, and driving straight forward
+shows up as motion cleanly along `x` in `/odometry/filtered` — regardless of
+the IMU's mechanical mounting angle, which gets absorbed into the zero-point
+automatically along with whatever direction the rover happened to be facing.
+No need to determine the mounting offset by hand or touch `imu_joint` in
+`aries_base.xacro` for this.
+
+**The real implication**: "forward" is defined *per launch*, relative to
+wherever the rover was physically pointed when localization started — not a
+fixed compass direction. For the same `WAYPOINTS` coordinates
+(`global_path_planner.py`) to correspond to the same real-world locations
+across different runs, **start the rover in the same physical orientation
+every time** you bring localization up.
+
+Verify with:
 
 ```bash
 ros2 run rover_nav check_heading.py
 ```
 
-This live-prints fused yaw and position from `/odometry/filtered`. With
-localization up (no need for the full drive stack), note the starting x/y
-(should be ~0, 0), then drive the rover straight forward a couple meters
-(manual/joystick is fine) and read which axis actually changed:
-
-- `x` grows, `y` ~0 → forward is correctly +X, no offset.
-- `y` shrinks (goes negative), `x` ~0 → forward is actually -Y → **90°** offset.
-- `x` shrinks (goes negative), `y` ~0 → forward is actually -X → **180°** offset.
-- Anything else → that reading *is* the exact correction needed, not a guess.
-
-Static yaw alone is not reliable for this: it typically reads ~0 at launch
-regardless of the rover's true physical orientation, since there's no
-absolute compass reference — 0 just means "wherever it was facing at boot."
-Position drift under known forward motion is the real tell.
-
-Once you know the actual offset, the fix belongs in the `imu_joint`'s `rpy`
-in `aries_base.xacro` (the `base_link -> imu_frame` fixed transform
-mentioned above) — not in `ekf_config.yaml` or any downstream consumer.
-`robot_state_publisher` publishes that transform over TF, and
-`robot_localization`'s EKF uses it to rotate the IMU's raw orientation into
-`base_link` automatically before fusing, so correcting it there fixes it
-everywhere downstream in one place.
+Live-prints fused yaw and position from `/odometry/filtered`. Yaw should
+read ~0 immediately at launch regardless of which way the rover is actually
+facing; driving straight forward a couple meters should then move `x`
+cleanly with `y` staying near 0.
 
 ## Teensy Gripper Serial
 

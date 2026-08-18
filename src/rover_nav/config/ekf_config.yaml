@@ -36,7 +36,15 @@ ekf_filter_node:
                   false, false, true,    # vroll, vpitch, vyaw - ONLY vyaw
                   false, false, false]   # ax, ay, az - don't use accel in 2D
     imu0_differential: false
-    imu0_relative: false
+    # true: the yaw fused at EKF startup becomes the zero reference, and
+    # every later reading is reported relative to it -- so "forward" at
+    # launch is always yaw=0 regardless of which absolute direction the IMU
+    # itself (with its fixed mechanical mounting offset) happened to report
+    # at that moment. Was false, which fused the IMU's raw absolute yaw
+    # directly -- e.g. 25 deg at one boot, a different number after manually
+    # rotating the rover -- causing "forward" driving to actually move along
+    # a mix of x and y instead of cleanly along x.
+    imu0_relative: true
     imu0_queue_size: 10
     imu0_remove_gravitational_acceleration: true
     
