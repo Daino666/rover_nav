@@ -31,6 +31,13 @@ current_right_velocity = 0.0
 current_left_velocity = 0.0
 ACCEL_LIMIT = 3.0  # rev/s² - adjust this for ramp speed
 
+# When true, horizontal (turn) axis is ignored entirely -- both sides always
+# get the same commanded velocity, so no human steering input can reach the
+# wheels at all. For isolating straight-line drift tests (e.g. IMU-yaw-while-
+# driving characterization) from any zigzag/steering-correction confound.
+# ros2 run rover_nav Rover_control_Joy.py --ros-args -p forward_only:=true
+FORWARD_ONLY = False
+
 def apply_deadzone(value, threshold=DEADZONE):
     """Remove joystick drift"""
     if abs(value) < threshold:
@@ -55,12 +62,16 @@ def joy_callback(joy_msg):
 
     # Read joystick
     vertical = apply_deadzone(-joy_msg.axes[3])
-    horizontal = apply_deadzone(joy_msg.axes[2])
+    horizontal = 0.0 if FORWARD_ONLY else apply_deadzone(joy_msg.axes[2])
     B_button = joy_msg.buttons[1]
     trigger = joy_msg.buttons[7]
 
+    if FORWARD_ONLY:
+        # Turn axis ignored -- both sides always get the same velocity.
+        target_right_velocity = vertical * MAX_VELOCITY
+        target_left_velocity = vertical * MAX_VELOCITY
     # Determine mode: spin vs drive
-    if abs(vertical) < TURN_THRESHOLD and abs(horizontal) > 0.1:
+    elif abs(vertical) < TURN_THRESHOLD and abs(horizontal) > 0.1:
         # SPIN IN PLACE - same velocity, same sign
         turn_vel = horizontal * MAX_VELOCITY * TURN_BOOST
         target_right_velocity = turn_vel
@@ -80,10 +91,16 @@ def main(args=None):
     global target_right_velocity, target_left_velocity, node
     global trigger
     global current_right_velocity, current_left_velocity
+    global FORWARD_ONLY
 
 
     rclpy.init(args=args)
     node = Node("six_wheel_controller")
+
+    node.declare_parameter("forward_only", False)
+    FORWARD_ONLY = bool(node.get_parameter("forward_only").value)
+    if FORWARD_ONLY:
+        node.get_logger().info("forward_only: true -- turn axis disabled, straight-line-only mode")
 
     num_axes = 6
     # Post-2026-08-12 reassembly mapping; see cmd_vel_odrive_bridge.yaml.
