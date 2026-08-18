@@ -99,3 +99,28 @@ read ~0 immediately at launch regardless of which way the rover is actually
 facing; driving straight forward a couple meters should then move `x`
 cleanly with `y` staying near 0.
 
+### Full bring-up for bench testing (IMU only, no wheel hardware)
+
+`aries_localization/launch/localization.launch.py` only starts the fusion
+side (`imu_yaw_zero.py` → `ekf_node` → `map_odom_broadcaster.py`) — its own
+docstring says so explicitly: *"This package fuses; it does not drive
+sensors."* Launching it alone leaves `/odometry/filtered` ticking but never
+actually updating (confirmed on hardware: `robot_localization` silently
+discards every IMU measurement whose `frame_id` doesn't resolve via TF, with
+no error at default log level). To exercise the real pipeline on a bench
+with just the IMU connected, three more things need to be running:
+
+```
+ros2 launch aries_imu imu.launch.py                 # starts the IMU driver
+ros2 run aries_bringup mock_rover_drive.py           # stands in for absent wheel hardware
+```
+
+plus a `robot_state_publisher` publishing the URDF (needed for the static
+`base_link -> imu_frame` TF that `imu0`'s fusion depends on) — the full
+`aries_bringup`/`full_hardware.launch.py` chain provides this already; for a
+minimal manual bring-up without that chain, launch `robot_state_publisher`
+directly with the xacro'd `robot_description` param (see
+`aries`/`display.launch.xml` for the `Command(...)` + `ParameterValue(...,
+value_type=str)` pattern — passing xacro output as a raw CLI param string
+breaks on multi-line content and on `: ` inside xacro comments).
+
