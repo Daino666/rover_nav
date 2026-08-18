@@ -41,24 +41,34 @@ includes the IMU's own fixed mechanical mounting rotation relative to the
 chassis, so raw yaw at boot is whatever that combination happens to be (e.g.
 25°), not necessarily 0.
 
-`config/ekf_config.yaml`'s `imu0_relative: true` (under `imu0`) is *supposed*
+`config/ekf_config.yaml`'s `imu0_relative: true` (under `imu0`) was *meant*
 to fix this at the fusion level rather than needing a precise
 mechanical-offset measurement: the yaw fused when the EKF starts becomes the
 zero reference, and every later reading is reported relative to it. In
-practice this was confirmed on hardware to not reliably hold on its own —
-robot_localization's own `ros_filter.cpp preparePose()` composes a second,
-live TF lookup (`target_frame_trans`, built from the filter's own
-currently-published `odom->base_link`) on top of the relative-mode zeroing,
-so the first fused reading isn't deterministically 0 even with
-`imu0_relative` on. `scripts/ekf_yaw_zero.py` (started automatically by
-`aries_localization/launch/localization.launch.py`) makes it deterministic
-instead: it waits for the first `/odometry/filtered` message and calls the
-EKF's own `/set_pose` service once to force yaw to 0 at that position. So
-"forward" at launch is always yaw=0, and driving straight forward shows up
-as motion cleanly along `x` in `/odometry/filtered` — regardless of the
-IMU's mounting angle, which gets absorbed into the zero-point automatically
-along with whatever direction the rover happened to be facing. No need to
-touch `imu_joint` in `aries_base.xacro` for this.
+practice this was confirmed on hardware to not do that reliably — fused
+yaw stayed off from the IMU's own absolute heading by a constant ~90
+degrees, reproduced across two different boot orientations, instead of
+settling near 0. Externally correcting the EKF's state after the fact (via
+its `/set_pose` service) was also tried and confirmed not to hold: ongoing
+IMU fusion keeps measuring yaw relative to robot_localization's own internal
+reference and pulls the corrected state back away from 0 within a few
+updates.
+
+`scripts/imu_yaw_zero.py` (started automatically by
+`aries_localization/launch/localization.launch.py`, upstream of the EKF)
+sidesteps the whole mechanism instead: it relays the IMU topic, capturing
+the yaw of the very first message it sees and republishing every message
+(including that first one) with yaw replaced by `raw_yaw - reference`, a
+plain, self-computed relative heading. `localization.launch.py` points the
+EKF's `imu0` at this relayed topic and forces `imu0_relative: false`, so the
+EKF fuses it as a plain absolute-yaw measurement that already reads 0 at the
+first sample — robot_localization's own relative-mode bookkeeping isn't
+involved at all. So "forward" at launch is always yaw=0, and driving
+straight forward shows up as motion cleanly along `x` in
+`/odometry/filtered` — regardless of the IMU's mounting angle, which gets
+absorbed into the zero-point automatically along with whatever direction
+the rover happened to be facing. No need to touch `imu_joint` in
+`aries_base.xacro` for this.
 
 **The real implication**: `imu0_relative` zeros yaw *within* the rover's own
 `odom` frame, but `odom` is still just "wherever the rover happened to be

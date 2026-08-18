@@ -16,7 +16,7 @@
   <depend>odrive_can</depend>
   <depend>visualization_msgs</depend>
   <depend>std_srvs</depend>
-  <depend>robot_localization</depend>
+  <depend>microstrain_inertial_msgs</depend>
   <exec_depend>ament_index_python</exec_depend>
   <exec_depend>rosidl_default_runtime</exec_depend>
   <exec_depend>tf2_ros</exec_depend>

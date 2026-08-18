@@ -25,9 +25,11 @@ ekf_filter_node:
     
     # ============================================
     # IMU - Orientation ONLY
-    # MicroStrain 3DM-GX5-AHRS. Overridden by aries_localization from the
-    # imu_topic launch argument; the value here is the default that argument
-    # carries, kept in sync so the file also works standalone.
+    # MicroStrain 3DM-GX5-AHRS. Overridden by aries_localization/localization.launch.py
+    # to imu_topic + "_yaw_zeroed" (imu_yaw_zero.py's relayed, pre-zeroed
+    # output -- see that script's docstring) with imu0_relative forced to
+    # false; the values here are the standalone defaults, kept in sync so
+    # this file also works without that launch file.
     # ============================================
     imu0: /microstrain/ekf/imu/data
     imu0_config: [false, false, false,   # x, y, z
@@ -36,14 +38,16 @@ ekf_filter_node:
                   false, false, true,    # vroll, vpitch, vyaw - ONLY vyaw
                   false, false, false]   # ax, ay, az - don't use accel in 2D
     imu0_differential: false
-    # true: the yaw fused at EKF startup becomes the zero reference, and
-    # every later reading is reported relative to it -- so "forward" at
-    # launch is always yaw=0 regardless of which absolute direction the IMU
-    # itself (with its fixed mechanical mounting offset) happened to report
-    # at that moment. Was false, which fused the IMU's raw absolute yaw
-    # directly -- e.g. 25 deg at one boot, a different number after manually
-    # rotating the rover -- causing "forward" driving to actually move along
-    # a mix of x and y instead of cleanly along x.
+    # Was intended to make the yaw fused at EKF startup become the zero
+    # reference (so "forward" at launch is always yaw=0 regardless of the
+    # IMU's absolute mounting offset), but confirmed on hardware to NOT
+    # reliably do that -- fused yaw stayed off from the IMU's own absolute
+    # heading by a constant ~90 degrees, reproduced across two different
+    # boot orientations, instead of reading ~0. localization.launch.py now
+    # overrides this to false and instead fuses imu_yaw_zero.py's
+    # already-zeroed topic as a plain absolute measurement, sidestepping
+    # this mode entirely. Left true here only for the standalone/undriven
+    # case (running this yaml directly, without that launch file).
     imu0_relative: true
     imu0_queue_size: 10
     imu0_remove_gravitational_acceleration: true

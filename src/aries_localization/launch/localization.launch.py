@@ -104,9 +104,18 @@ def _start_localization(context, *args, **kwargs):
         ))]
 
     ekf_overrides = {"base_link_frame": "base_footprint"}
+    zeroed_imu_topic = imu_topic + "_yaw_zeroed"
 
     if imu_source == "microstrain":
-        ekf_overrides["imu0"] = imu_topic
+        # imu_yaw_zero.py (started below) relays imu_topic with yaw
+        # pre-zeroed at its first message -- ekf_config.yaml's own
+        # imu0_relative: true was confirmed on hardware to not reliably
+        # zero fused yaw (constant ~90 degree offset reproduced across two
+        # different boot orientations), so this fuses the pre-zeroed topic
+        # as a plain absolute-yaw measurement instead of relying on
+        # robot_localization's own relative-mode bookkeeping at all.
+        ekf_overrides["imu0"] = zeroed_imu_topic
+        ekf_overrides["imu0_relative"] = False
         ekf_config = _ekf_config("ekf_config.yaml")
     else:
         ekf_overrides["odom0_config"] = ODOM_ONLY_CONFIG
@@ -145,6 +154,20 @@ def _start_localization(context, *args, **kwargs):
             ))
         )
 
+    if imu_source == "microstrain":
+        actions.append(
+            Node(
+                package="rover_nav",
+                executable="imu_yaw_zero.py",
+                name="imu_yaw_zero",
+                output="screen",
+                parameters=[{
+                    "input_topic": imu_topic,
+                    "output_topic": zeroed_imu_topic,
+                }],
+            )
+        )
+
     actions.append(
         Node(
             package="robot_localization",
@@ -152,18 +175,6 @@ def _start_localization(context, *args, **kwargs):
             name="ekf_filter_node",
             output="screen",
             parameters=[ekf_config, ekf_overrides],
-        )
-    )
-    # imu0_relative in ekf_config.yaml alone was confirmed on hardware not to
-    # reliably zero fused yaw at boot (see rover_nav/scripts/ekf_yaw_zero.py
-    # docstring) -- this calls the EKF's own /set_pose service once, on its
-    # first /odometry/filtered message, to force it deterministically.
-    actions.append(
-        Node(
-            package="rover_nav",
-            executable="ekf_yaw_zero.py",
-            name="ekf_yaw_zero",
-            output="screen",
         )
     )
     return actions
