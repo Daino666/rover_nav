@@ -259,6 +259,61 @@ the rover is clear, enable it explicitly:
 ros2 service call /aries_drive/enable std_srvs/srv/SetBool "{data: true}"
 ```
 
+### Autonomous Waypoint Navigation (Pure Pursuit)
+
+The rover can autonomously drive a sequence of waypoints with no map
+required. A Hermite-spline leg planner degenerates to straight-line legs
+through free space, matching what `rover_nav`'s `omar` branch's Nav2 stack
+(`SmacPlanner2D`) does against an empty costmap — see
+`src/rover_nav/scripts/global_path_planner.py`'s docstring for the full
+reasoning.
+
+**1. Edit the route.** Set `START`, `START_HEADING`, and `WAYPOINTS` near the
+top of `src/rover_nav/scripts/global_path_planner.py`. Both the visualizer
+and the actual driver import this same list, so it's the single source of
+truth.
+
+**2. Visualize before driving:**
+
+```bash
+ros2 launch rover_nav visualize_global_path.launch.py
+```
+
+Brings up RViz pre-configured (`global_path_view.rviz`) showing the planned
+legs and waypoint markers on `/pure_pursuit/path` / `/global_path/waypoints`.
+Set RViz's Fixed Frame to `odom` if it doesn't default there — this
+publisher needs no TF, it's self-referential. No hardware or rover needed
+for this step, but double-check `START`/`START_HEADING` actually match where
+the rover will really be sitting when you start the run, since the preview
+is only accurate if they do.
+
+**3. Run it on the real rover.** `full_hardware.launch.py` already starts
+`cmd_vel_arbiter.py` (the pure pursuit waypoint follower) by default via
+`start_pure_pursuit:=true`. It publishes `/cmd_vel`; `cmd_vel_odrive_bridge`
+(already part of this launch) owns the actual ODrive axes, ramping, and
+command-timeout fail-safe — nothing extra to start. It will **not** drive on
+its own: `pure_pursuit_autostart` defaults to `false` deliberately. Once
+armed (see above):
+
+```bash
+ros2 service call /planner/start std_srvs/srv/Trigger
+```
+
+Stop it at any time with:
+
+```bash
+ros2 service call /planner/stop std_srvs/srv/Trigger
+```
+
+The rover drives to each waypoint in order along its Hermite-curved leg,
+halts `halt_time` seconds (default 1.5s) at each one, then continues. A
+manual joystick stick input (LB-gated teleop) automatically overrides
+pure pursuit and yields back once released — no mode switch needed. If the
+lookahead index stalls on the same point for `stuck_timeout_s` (default 3s,
+a real geometric-curvature edge case, not an obstacle check — this stack has
+no obstacle sensing wired in), it force-advances rather than circling
+indefinitely.
+
 ### Arm And Gripper Hardware Only
 
 Arm/gripper hardware with MoveIt/RViz:
