@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Publish the waypoint-by-waypoint path for RViz, with no map, hardware, or
-joystick needed -- just rclpy + standard message packages.
+"""Publish the waypoint-by-waypoint path for RViz, with no occupancy map,
+hardware, or joystick needed -- just rclpy + standard message packages.
 
 Edit START/WAYPOINTS in global_path_planner.py, then run this node. It
 publishes once on startup (latched, so RViz sees it whenever it connects)
@@ -32,7 +32,8 @@ from nav_msgs.msg import Path
 from std_msgs.msg import ColorRGBA
 from visualization_msgs.msg import Marker, MarkerArray
 
-FRAME_ID = "odom"  # set RViz's Fixed Frame to this -- no TF needed, it's self-referential
+FRAME_ID = "map"  # set RViz's Fixed Frame to this -- WAYPOINTS/START are already
+                   # natively in map frame (the competition's given axes), no TF needed
 
 
 def to_path_msg(points, node, frame_id=FRAME_ID):
@@ -120,7 +121,7 @@ def main(args=None):
     )
     node.get_logger().info(
         "Topics: /pure_pursuit/path, /global_path/waypoints -- "
-        "set RViz's Fixed Frame to 'odom'. Staying alive to serve late subscribers (Ctrl+C to exit)."
+        "set RViz's Fixed Frame to 'map'. Staying alive to serve late subscribers (Ctrl+C to exit)."
     )
 
     try:

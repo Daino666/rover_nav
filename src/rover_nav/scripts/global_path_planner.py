@@ -33,11 +33,28 @@ GLOBAL_RESOLUTION = 0.1  # global_costmap.resolution -- spacing between points o
 # rover's pose when it isn't coming from live odometry
 # (rover_controller_pure_pursuit.py uses its actual position and heading
 # instead once running; the offline CLI/RViz tools below use these as-is).
-# WAYPOINTS are goal points to visit in order, in the odom frame. The rover
-# stops at each one before continuing to the next.
+# WAYPOINTS are goal points to visit in order, in the map frame -- the
+# competition's own axes, defined by its two given reference points, NOT
+# this rover's local odom frame (which just starts wherever it happens to
+# boot facing -- see MAP_TO_ODOM_* below for how those two get reconciled).
+# The rover stops at each waypoint before continuing to the next.
 START         = [0.0, 0.0]
 START_HEADING = 0.0  # radians, 0 = facing +X
 WAYPOINTS     = [[2.0, 3.0], [4.0, 2.0], [5.0, 1.0], [4.0, -2.0], [2.0, -3.0]]
+
+# map -> odom alignment correction: how this rover's local odom frame sits
+# relative to the competition's map frame (the frame WAYPOINTS above are
+# expressed in). Published once at startup by map_odom_broadcaster.py.
+# Defaults to identity (rover assumed to power on exactly at the
+# competition's origin point, facing its +X axis) since the actual
+# competition-day alignment procedure -- how these three numbers actually
+# get determined from the two given reference points -- is still TBD; there
+# is no absolute-position sensor (GPS/RTK/etc) on this rover to compute it
+# automatically. Edit these directly before a run, same workflow as
+# WAYPOINTS above, once the real numbers are known.
+MAP_TO_ODOM_X       = 0.0  # metres
+MAP_TO_ODOM_Y       = 0.0  # metres
+MAP_TO_ODOM_YAW_DEG = 0.0  # degrees
 
 
 def distance(p1, p2):

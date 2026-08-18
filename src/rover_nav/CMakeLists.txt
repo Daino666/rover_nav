@@ -22,6 +22,7 @@ install(
     scripts/publish_global_path.py
     scripts/cmd_vel_arbiter.py
     scripts/check_heading.py
+    scripts/map_odom_broadcaster.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

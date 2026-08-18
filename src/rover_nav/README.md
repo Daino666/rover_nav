@@ -51,12 +51,23 @@ which gets absorbed into the zero-point automatically along with whatever
 direction the rover happened to be facing. No need to touch `imu_joint` in
 `aries_base.xacro` for this.
 
-**The real implication**: "forward" is defined *per launch*, relative to
-wherever the rover was physically pointed when localization started — not a
-fixed compass direction. For the same `WAYPOINTS` coordinates
-(`global_path_planner.py`) to correspond to the same real-world locations
-across different runs, **start the rover in the same physical orientation
-every time** you bring localization up.
+**The real implication**: `imu0_relative` zeros yaw *within* the rover's own
+`odom` frame, but `odom` is still just "wherever the rover happened to be
+pointed when localization started" — it has no relationship to the
+competition's own axes (defined by the two reference points the organizers
+give). Requiring the rover to physically boot facing the same way every
+time was a fragile workaround for that, not a real fix. `scripts/map_odom_broadcaster.py`
+(started automatically as part of `aries_localization/launch/localization.launch.py`)
+replaces it: it publishes a static `map -> odom` transform holding the
+alignment correction between the two, so `WAYPOINTS` in
+`scripts/global_path_planner.py` are given in `map` frame (the competition's
+axes) and `cmd_vel_arbiter.py` transforms them into `odom` once at startup
+before driving — the rover's actual boot orientation no longer matters for
+`WAYPOINTS` to mean the same real-world locations. The correction itself
+(`MAP_TO_ODOM_X/Y/YAW_DEG` in `global_path_planner.py`, defaulting to
+identity) is still a manually-set number for now — there's no
+absolute-position sensor on this rover to compute it automatically, and the
+actual competition-day procedure for determining it is still undecided.
 
 Verify with:
 

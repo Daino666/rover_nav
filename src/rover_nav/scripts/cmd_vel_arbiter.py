@@ -43,6 +43,8 @@ sys.path.insert(0, os.path.dirname(__file__))
 from global_path_planner import distance, hermite_leg, GLOBAL_RESOLUTION, WAYPOINTS  # noqa: E402
 
 import rclpy
+import tf2_ros
+from rclpy.duration import Duration as RclpyDuration
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from geometry_msgs.msg import Twist
@@ -57,8 +59,13 @@ def quat_to_yaw(qx, qy, qz, qw):
     return math.atan2(siny_cosp, cosy_cosp)
 
 
-def normalize_angle(angle):
-    return math.atan2(math.sin(angle), math.cos(angle))
+def transform_point(point, tx, ty, yaw):
+    """Apply a 2D rigid transform (translation + rotation) to a point."""
+    x, y = point[0], point[1]
+    return [
+        x * math.cos(yaw) - y * math.sin(yaw) + tx,
+        x * math.sin(yaw) + y * math.cos(yaw) + ty,
+    ]
 
 
 def point_global_to_local(point, yaw, pos):
@@ -116,20 +123,6 @@ class CmdVelArbiter(Node):
         self.car_pos = None
         self.car_yaw = None
         self.last_odom_time = None
-
-        # ---- yaw zeroing, done here rather than relying solely on
-        # ekf_config.yaml's imu0_relative: true. robot_localization's own
-        # relative-mode zeroing (ros_filter.cpp preparePose(): step 7g)
-        # correctly zeros the *sensor's* contribution against its first
-        # reading, but a *separate* step (7h) then applies target_frame_trans
-        # -- a live TF lookup through the filter's own currently-published
-        # odom->base_link -- on top of that. Since that transform reflects
-        # whatever the filter's own state happens to be at that exact
-        # processing instant (tick timing/settling, not a fixed value), the
-        # final fused yaw isn't reliably 0 on the first reading even with
-        # imu0_relative: true. Zeroing again here, against the first reading
-        # this node itself sees, is fully within code we control.
-        self._yaw_offset = None
         self.drive_enabled = False
         self.drive_enabled_seen = False
         self.estopped = False
@@ -141,11 +134,23 @@ class CmdVelArbiter(Node):
         self.force_replan = False
 
         # ---- waypoint sequencer (see global_path_planner.py)
+        # WAYPOINTS (imported below) is in the competition's map frame;
+        # self.waypoints is the same list transformed once into this node's
+        # odom frame via the static map->odom transform (see
+        # _try_load_waypoints), which everything below actually drives
+        # against. None until that transform becomes available -- see
+        # _safety_gate, which holds rather than assuming an identity
+        # transform in the meantime.
+        self.waypoints = None
         self.current_wp_idx = 0
         self.leg_path = []
         self.leg_ready = False
         self.halt_until = None
         self.current_target_idx = 0
+
+        # ---- map -> odom lookup (see _try_load_waypoints)
+        self.tf_buffer = tf2_ros.Buffer()
+        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
 
         # ---- stuck/circling detection (ported from omar's
         # Pure_pursuit_Gazebo.py after it was traced back to a real rollover
@@ -191,16 +196,7 @@ class CmdVelArbiter(Node):
     def _on_odom(self, msg):
         self.car_pos = [msg.pose.pose.position.x, msg.pose.pose.position.y]
         q = msg.pose.pose.orientation
-        raw_yaw = quat_to_yaw(q.x, q.y, q.z, q.w)
-
-        if self._yaw_offset is None:
-            self._yaw_offset = raw_yaw
-            self.get_logger().info(
-                f"zeroing yaw: first fused reading was {math.degrees(raw_yaw):.1f} deg, "
-                "treating that as forward from here on"
-            )
-
-        self.car_yaw = normalize_angle(raw_yaw - self._yaw_offset)
+        self.car_yaw = quat_to_yaw(q.x, q.y, q.z, q.w)
         self.last_odom_time = time.monotonic()
 
     def _on_teleop(self, msg):
@@ -265,6 +261,32 @@ class CmdVelArbiter(Node):
 
     # ---------- waypoint leg planning ----------
 
+    def _try_load_waypoints(self):
+        """One-time: look up the static map->odom transform (published by
+        map_odom_broadcaster.py) and transform WAYPOINTS (map frame) into
+        self.waypoints (odom frame, what the rest of this file drives
+        against). map->odom never changes during a run, so this only needs
+        to succeed once -- cheap to retry every tick from _control_loop
+        until it does."""
+        if self.waypoints is not None:
+            return
+        try:
+            tfm = self.tf_buffer.lookup_transform(
+                "odom", "map", rclpy.time.Time(), timeout=RclpyDuration(seconds=0.1)
+            )
+        except tf2_ros.TransformException:
+            return
+        t = tfm.transform.translation
+        yaw = quat_to_yaw(
+            tfm.transform.rotation.x, tfm.transform.rotation.y,
+            tfm.transform.rotation.z, tfm.transform.rotation.w,
+        )
+        self.waypoints = [transform_point(wp, t.x, t.y, yaw) for wp in WAYPOINTS]
+        self.get_logger().info(
+            f"map->odom transform found (x={t.x:.3f} y={t.y:.3f} yaw={math.degrees(yaw):.2f}deg) "
+            f"-- {len(self.waypoints)} waypoint(s) ready in odom frame"
+        )
+
     def _ensure_leg_path(self, target):
         if self.leg_ready:
             return
@@ -274,7 +296,7 @@ class CmdVelArbiter(Node):
         self._last_seen_idx = None
         self._stuck_since = None
         self.get_logger().info(
-            f"leg to waypoint {self.current_wp_idx + 1}/{len(WAYPOINTS)}: {len(self.leg_path)} points"
+            f"leg to waypoint {self.current_wp_idx + 1}/{len(self.waypoints)}: {len(self.leg_path)} points"
         )
 
     # ---------- control loop ----------
@@ -295,6 +317,11 @@ class CmdVelArbiter(Node):
             return False, "e-stopped"
         if not self.run_started:
             return False, "run not started (call /planner/start)"
+        if self.waypoints is None:
+            # Fail closed: hold rather than assume an identity map->odom
+            # transform. A control loop that confidently drives on a wrong
+            # assumed-zero correction is worse than one that just waits.
+            return False, "map->odom transform not available yet"
         if self.car_pos is None or self.car_yaw is None or self.last_odom_time is None:
             return False, f"no odometry on {self.odom_topic}"
         if now - self.last_odom_time > self.odom_timeout_s:
@@ -313,6 +340,7 @@ class CmdVelArbiter(Node):
     def _control_loop(self):
         now = time.monotonic()
 
+        self._try_load_waypoints()
         self._check_ownership()
         if self.conflict:
             self._publish(0.0, 0.0)
@@ -338,7 +366,7 @@ class CmdVelArbiter(Node):
             self.leg_ready = False
             self.force_replan = False
 
-        if self.current_wp_idx >= len(WAYPOINTS):
+        if self.current_wp_idx >= len(self.waypoints):
             self._publish(0.0, 0.0)
             return
 
@@ -349,17 +377,17 @@ class CmdVelArbiter(Node):
             self.halt_until = None
             self.current_wp_idx += 1
             self.leg_ready = False
-            if self.current_wp_idx >= len(WAYPOINTS):
+            if self.current_wp_idx >= len(self.waypoints):
                 self.get_logger().info("all waypoints reached!")
                 self._publish(0.0, 0.0)
                 return
 
-        target = WAYPOINTS[self.current_wp_idx]
+        target = self.waypoints[self.current_wp_idx]
         self._ensure_leg_path(target)
 
         if distance(self.car_pos, target) < self.goal_tolerance:
             self.get_logger().info(
-                f"reached waypoint {self.current_wp_idx + 1}/{len(WAYPOINTS)} -- "
+                f"reached waypoint {self.current_wp_idx + 1}/{len(self.waypoints)} -- "
                 f"pausing {self.halt_time:.1f}s"
             )
             self.halt_until = now + self.halt_time
@@ -401,7 +429,7 @@ class CmdVelArbiter(Node):
         angular = curvature * self.base_velocity
 
         self.get_logger().info(
-            f"wp {self.current_wp_idx + 1}/{len(WAYPOINTS)} | pos: {self.car_pos} | "
+            f"wp {self.current_wp_idx + 1}/{len(self.waypoints)} | pos: {self.car_pos} | "
             f"target: {lookahead_point} | curv: {curvature:.3f}",
             throttle_duration_sec=0.5,
         )

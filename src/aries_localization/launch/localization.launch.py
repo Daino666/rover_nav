@@ -157,6 +157,32 @@ def _start_localization(context, *args, **kwargs):
     return actions
 
 
+def _start_map_odom_broadcaster(context, *args, **kwargs):
+    # map -> odom alignment (see rover_nav/scripts/map_odom_broadcaster.py).
+    # Frame setup, independent of which drive backend/IMU source got
+    # selected above -- always start it. Launch args default to "" (unset)
+    # rather than a numeric default so they can be left out of the
+    # parameters dict entirely when not overridden, and the node falls back
+    # to its own script-level default (global_path_planner.py's
+    # MAP_TO_ODOM_*) -- passing an empty string against a float-typed
+    # declared parameter would otherwise be a type mismatch.
+    overrides = {}
+    for name in ("map_to_odom_x", "map_to_odom_y", "map_to_odom_yaw_deg"):
+        value = LaunchConfiguration(name).perform(context)
+        if value:
+            overrides[name] = float(value)
+
+    return [
+        Node(
+            package="rover_nav",
+            executable="map_odom_broadcaster.py",
+            name="map_odom_broadcaster",
+            output="screen",
+            parameters=[overrides] if overrides else [],
+        )
+    ]
+
+
 def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument(
@@ -183,5 +209,22 @@ def generate_launch_description():
         DeclareLaunchArgument("imu_frame", default_value="imu_frame"),
         DeclareLaunchArgument("imu_topic", default_value="/microstrain/ekf/imu/data"),
 
+        DeclareLaunchArgument(
+            "map_to_odom_x", default_value="",
+            description="Override map_odom_broadcaster's x (metres); "
+                        "empty = use global_path_planner.py's MAP_TO_ODOM_X.",
+        ),
+        DeclareLaunchArgument(
+            "map_to_odom_y", default_value="",
+            description="Override map_odom_broadcaster's y (metres); "
+                        "empty = use global_path_planner.py's MAP_TO_ODOM_Y.",
+        ),
+        DeclareLaunchArgument(
+            "map_to_odom_yaw_deg", default_value="",
+            description="Override map_odom_broadcaster's yaw (degrees); "
+                        "empty = use global_path_planner.py's MAP_TO_ODOM_YAW_DEG.",
+        ),
+
         OpaqueFunction(function=_start_localization),
+        OpaqueFunction(function=_start_map_odom_broadcaster),
     ])
