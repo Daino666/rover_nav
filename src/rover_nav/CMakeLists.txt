@@ -25,6 +25,7 @@ install(
     scripts/map_odom_broadcaster.py
     scripts/imu_yaw_zero.py
     scripts/imu_noise_check.py
+    scripts/yaw_source_compare.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
