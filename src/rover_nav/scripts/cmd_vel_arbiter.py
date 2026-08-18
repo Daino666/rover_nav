@@ -90,6 +90,7 @@ class CmdVelArbiter(Node):
         self.declare_parameter("teleop_deadband", 0.02)
         self.declare_parameter("odom_timeout_s", 0.5)
         self.declare_parameter("control_rate_hz", 20.0)
+        self.declare_parameter("stuck_timeout_s", 3.0)
 
         self.cmd_vel_topic = str(self.get_parameter("cmd_vel_topic").value)
         self.teleop_topic = str(self.get_parameter("teleop_topic").value)
@@ -105,6 +106,7 @@ class CmdVelArbiter(Node):
         self.teleop_deadband = float(self.get_parameter("teleop_deadband").value)
         self.odom_timeout_s = float(self.get_parameter("odom_timeout_s").value)
         control_rate = max(1.0, float(self.get_parameter("control_rate_hz").value))
+        self.stuck_timeout_s = float(self.get_parameter("stuck_timeout_s").value)
 
         # ---- pose / drive state
         self.car_pos = None
@@ -126,6 +128,14 @@ class CmdVelArbiter(Node):
         self.leg_ready = False
         self.halt_until = None
         self.current_target_idx = 0
+
+        # ---- stuck/circling detection (ported from omar's
+        # Pure_pursuit_Gazebo.py after it was traced back to a real rollover
+        # there: geometric curvature clamping alone doesn't guarantee
+        # progress toward the lookahead target, so a stalled index needs to
+        # be force-advanced rather than left to circle indefinitely)
+        self._last_seen_idx = None
+        self._stuck_since = None
 
         # ---- /cmd_vel ownership conflict tracking
         self.conflict = False
@@ -234,6 +244,8 @@ class CmdVelArbiter(Node):
         self.leg_path = hermite_leg(self.car_pos, self.car_yaw, target, GLOBAL_RESOLUTION)
         self.current_target_idx = 0
         self.leg_ready = True
+        self._last_seen_idx = None
+        self._stuck_since = None
         self.get_logger().info(
             f"leg to waypoint {self.current_wp_idx + 1}/{len(WAYPOINTS)}: {len(self.leg_path)} points"
         )
@@ -335,6 +347,27 @@ class CmdVelArbiter(Node):
                 break
         if lookahead_point is None:
             lookahead_point = self.leg_path[-1]
+
+        # Stuck/circling detection: if the lookahead index hasn't advanced
+        # since last tick, the rover may be locked into a tight circle it
+        # can never geometrically close (e.g. MAX_CURVATURE clamped tighter
+        # than this leg's tangent requires). Force the index forward after
+        # stuck_timeout_s rather than letting it spin indefinitely.
+        if self.current_target_idx == self._last_seen_idx:
+            if self._stuck_since is None:
+                self._stuck_since = now
+            elif now - self._stuck_since >= self.stuck_timeout_s:
+                self.get_logger().warn(
+                    f"lookahead index {self.current_target_idx} hasn't advanced in "
+                    f"{self.stuck_timeout_s:.1f}s (stuck circling) -- forcing it forward."
+                )
+                self.current_target_idx = min(self.current_target_idx + 1, len(self.leg_path) - 1)
+                lookahead_point = self.leg_path[self.current_target_idx]
+                self._stuck_since = None
+                self._last_seen_idx = self.current_target_idx
+        else:
+            self._stuck_since = None
+            self._last_seen_idx = self.current_target_idx
 
         local_x, local_y = point_global_to_local(lookahead_point, self.car_yaw, self.car_pos)
         curvature = max(-self.max_curvature, min(self.max_curvature, calc_curvature(local_x, local_y)))
