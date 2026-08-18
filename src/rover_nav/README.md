@@ -41,15 +41,24 @@ includes the IMU's own fixed mechanical mounting rotation relative to the
 chassis, so raw yaw at boot is whatever that combination happens to be (e.g.
 25°), not necessarily 0.
 
-`config/ekf_config.yaml`'s `imu0_relative: true` (under `imu0`) fixes this
-at the fusion level rather than needing a precise mechanical-offset
-measurement: the yaw fused when the EKF starts becomes the zero reference,
-and every later reading is reported relative to it. So "forward" at launch
-is always yaw=0, and driving straight forward shows up as motion cleanly
-along `x` in `/odometry/filtered` — regardless of the IMU's mounting angle,
-which gets absorbed into the zero-point automatically along with whatever
-direction the rover happened to be facing. No need to touch `imu_joint` in
-`aries_base.xacro` for this.
+`config/ekf_config.yaml`'s `imu0_relative: true` (under `imu0`) is *supposed*
+to fix this at the fusion level rather than needing a precise
+mechanical-offset measurement: the yaw fused when the EKF starts becomes the
+zero reference, and every later reading is reported relative to it. In
+practice this was confirmed on hardware to not reliably hold on its own —
+robot_localization's own `ros_filter.cpp preparePose()` composes a second,
+live TF lookup (`target_frame_trans`, built from the filter's own
+currently-published `odom->base_link`) on top of the relative-mode zeroing,
+so the first fused reading isn't deterministically 0 even with
+`imu0_relative` on. `scripts/ekf_yaw_zero.py` (started automatically by
+`aries_localization/launch/localization.launch.py`) makes it deterministic
+instead: it waits for the first `/odometry/filtered` message and calls the
+EKF's own `/set_pose` service once to force yaw to 0 at that position. So
+"forward" at launch is always yaw=0, and driving straight forward shows up
+as motion cleanly along `x` in `/odometry/filtered` — regardless of the
+IMU's mounting angle, which gets absorbed into the zero-point automatically
+along with whatever direction the rover happened to be facing. No need to
+touch `imu_joint` in `aries_base.xacro` for this.
 
 **The real implication**: `imu0_relative` zeros yaw *within* the rover's own
 `odom` frame, but `odom` is still just "wherever the rover happened to be

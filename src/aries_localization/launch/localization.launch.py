@@ -154,6 +154,18 @@ def _start_localization(context, *args, **kwargs):
             parameters=[ekf_config, ekf_overrides],
         )
     )
+    # imu0_relative in ekf_config.yaml alone was confirmed on hardware not to
+    # reliably zero fused yaw at boot (see rover_nav/scripts/ekf_yaw_zero.py
+    # docstring) -- this calls the EKF's own /set_pose service once, on its
+    # first /odometry/filtered message, to force it deterministically.
+    actions.append(
+        Node(
+            package="rover_nav",
+            executable="ekf_yaw_zero.py",
+            name="ekf_yaw_zero",
+            output="screen",
+        )
+    )
     return actions
 
 

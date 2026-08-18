@@ -23,6 +23,7 @@ install(
     scripts/cmd_vel_arbiter.py
     scripts/check_heading.py
     scripts/map_odom_broadcaster.py
+    scripts/ekf_yaw_zero.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
