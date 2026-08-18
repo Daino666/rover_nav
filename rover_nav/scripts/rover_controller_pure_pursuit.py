@@ -15,6 +15,8 @@ import subprocess
 
 from ament_index_python.packages import PackageNotFoundError, get_package_share_directory
 
+from global_path_planner import distance, hermite_leg, GLOBAL_RESOLUTION, WAYPOINTS
+
 # ═══════════════════════════════════════════════════════════════
 # CONFIGURATION
 # ═══════════════════════════════════════════════════════════════
@@ -22,6 +24,7 @@ from ament_index_python.packages import PackageNotFoundError, get_package_share_
 TRACK_WIDTH    = 0.65
 BASE_VELOCITY  = 0.2
 GOAL_TOLERANCE = 0.5
+HALT_TIME      = 1.5  # seconds to stop at each waypoint before driving to the next
 MAX_WHEEL_VEL  = 1.0
 WHEEL_RADIUS   = 0.111
 LA             = 0.5
@@ -33,7 +36,15 @@ TURN_THRESHOLD    = 0.2
 DEADZONE          = 0.08
 ACCEL_LIMIT       = 3.0
 
-path = [[2.0, 0.0]]
+# WAYPOINTS (goal points to visit in order, odom frame) lives in
+# global_path_planner.py -- edit it there. The rover drives to WAYPOINTS[0],
+# stops for HALT_TIME, then WAYPOINTS[1], and so on -- see ensure_leg_path()
+# and the halt handling in pursuit_control().
+
+current_wp_idx = 0      # index into WAYPOINTS of the leg currently being driven
+leg_path       = []     # dense straight-line path for the current leg
+leg_ready      = False
+halt_until     = None   # monotonic timestamp to resume driving, or None if not halted
 
 # Post-2026-08-12 reassembly mapping; see cmd_vel_odrive_bridge.yaml.
 right_wheels = [0, 4, 3]
@@ -89,8 +100,26 @@ def ramp_velocity(current, target, dt):
 def mps_to_revs(mps):
     return mps / (2 * math.pi * WHEEL_RADIUS)
 
-def distance(p1, p2):
-    return math.sqrt((p1[0] - p2[0])**2 + (p1[1] - p2[1])**2)
+# ═══════════════════════════════════════════════════════════════
+# GLOBAL PATH PLANNING (stand-in for planner_server; one leg per waypoint)
+# ═══════════════════════════════════════════════════════════════
+
+def ensure_leg_path(target):
+    """(Re)plan the current leg -- a Hermite curve from wherever the rover
+    actually is right now (eased out of its current heading, car_yaw) to
+    `target` -- once per leg. Re-planning from the live position and
+    heading (rather than the previous waypoint) keeps the leg exact even
+    if the rover drifted slightly during the halt, and avoids demanding an
+    instant pivot at the start of each leg."""
+    global leg_path, leg_ready, current_target_idx
+    if leg_ready:
+        return
+    leg_path = hermite_leg(car_global_axis, car_yaw, target, GLOBAL_RESOLUTION)
+    current_target_idx = 0
+    leg_ready = True
+    node.get_logger().info(
+        f"➡️  Leg to waypoint {current_wp_idx + 1}/{len(WAYPOINTS)}: {len(leg_path)} points"
+    )
 
 def point_global_to_local(point_global, car_yaw, car_pos):
     dx = point_global[0] - car_pos[0]
@@ -146,6 +175,7 @@ def joy_callback(joy_msg):
     global trigger
     global prev_Y_button, prev_X_button
     global pursuit_enabled, current_target_idx, node
+    global current_wp_idx, leg_ready, halt_until
 
     vertical    = apply_deadzone(-joy_msg.axes[3])
     horizontal  = apply_deadzone( joy_msg.axes[2])
@@ -160,7 +190,9 @@ def joy_callback(joy_msg):
 
     if X_button == 1 and prev_X_button == 0:
         pursuit_enabled = True
-        current_target_idx = 0
+        current_wp_idx = 0
+        leg_ready = False  # re-plan the first leg from wherever the rover is now
+        halt_until = None
         play_sound(Start_sound)
         node.get_logger().info("🚀 Switched to AUTONOMOUS control")
 
@@ -180,25 +212,47 @@ def joy_callback(joy_msg):
 # ═══════════════════════════════════════════════════════════════
 
 def pursuit_control():
-    global current_target_idx
+    global current_target_idx, current_wp_idx, leg_ready, halt_until
 
     if car_yaw is None or car_global_axis is None:
         node.get_logger().warn("Waiting for odometry...", throttle_duration_sec=2.0)
         return 0.0, 0.0
 
-    if distance(car_global_axis, path[-1]) < GOAL_TOLERANCE:
-        node.get_logger().info("✅ Goal reached!", throttle_duration_sec=1.0)
+    if current_wp_idx >= len(WAYPOINTS):
+        node.get_logger().info("✅ All waypoints reached!", throttle_duration_sec=2.0)
+        return 0.0, 0.0
+
+    # Sitting still at the waypoint we just reached -- wait out HALT_TIME,
+    # then advance to the next one (or finish if that was the last).
+    if halt_until is not None:
+        if time.monotonic() < halt_until:
+            return 0.0, 0.0
+        halt_until = None
+        current_wp_idx += 1
+        leg_ready = False
+        if current_wp_idx >= len(WAYPOINTS):
+            node.get_logger().info("✅ All waypoints reached!")
+            return 0.0, 0.0
+
+    target = WAYPOINTS[current_wp_idx]
+    ensure_leg_path(target)
+
+    if distance(car_global_axis, target) < GOAL_TOLERANCE:
+        node.get_logger().info(
+            f"🛑 Reached waypoint {current_wp_idx + 1}/{len(WAYPOINTS)} -- pausing {HALT_TIME:.1f}s"
+        )
+        halt_until = time.monotonic() + HALT_TIME
         return 0.0, 0.0
 
     lookahead_point = None
-    for i in range(current_target_idx, len(path)):
-        if distance(car_global_axis, path[i]) >= LA:
-            lookahead_point = path[i]
+    for i in range(current_target_idx, len(leg_path)):
+        if distance(car_global_axis, leg_path[i]) >= LA:
+            lookahead_point = leg_path[i]
             current_target_idx = i
             break
 
     if lookahead_point is None:
-        lookahead_point = path[-1]
+        lookahead_point = leg_path[-1]
 
     local_x, local_y = point_global_to_local(lookahead_point, car_yaw, car_global_axis)
     curvature = float(np.clip(calc_curv(local_x, local_y), -MAX_CURVATURE, MAX_CURVATURE))
@@ -208,7 +262,8 @@ def pursuit_control():
     v_left_mps  = BASE_VELOCITY - angular * (TRACK_WIDTH / 2)
 
     node.get_logger().info(
-        f"pos: {car_global_axis} | target: {lookahead_point} | curv: {curvature:.3f}",
+        f"wp {current_wp_idx + 1}/{len(WAYPOINTS)} | pos: {car_global_axis} | "
+        f"target: {lookahead_point} | curv: {curvature:.3f}",
         throttle_duration_sec=0.5
     )
 

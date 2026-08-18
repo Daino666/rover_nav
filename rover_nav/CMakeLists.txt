@@ -17,9 +17,10 @@ install(
     scripts/Rover_control_Joy.py
     scripts/LeapOne_test_encoders.py
     scripts/Odom.py
+    scripts/global_path_planner.py
     scripts/rover_controller_pure_pursuit.py
-    scripts/Rover_path_controller/Pure_pursuit_Gazebo.py
-    scripts/odom_tf_broadcaster.py
+    scripts/publish_global_path.py
+    scripts/cmd_vel_arbiter.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
