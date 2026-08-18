@@ -22,8 +22,8 @@ from nav_msgs.msg import Odometry
 # ekf_config.yaml's process_noise_covariance diagonal, yaw (row 5) and vyaw
 # (row 11) of the 15x15 [x,y,z,roll,pitch,yaw,vx,vy,vz,vroll,vpitch,vyaw,
 # ax,ay,az] state -- keep in sync with that file if it changes.
-CONFIGURED_YAW_VARIANCE = 0.06
-CONFIGURED_VYAW_VARIANCE = 0.02
+CONFIGURED_YAW_VARIANCE = 0.004
+CONFIGURED_VYAW_VARIANCE = 0.0015
 
 
 def quat_to_yaw(qx, qy, qz, qw):
@@ -92,9 +92,9 @@ class ImuNoiseCheck(Node):
         self.get_logger().info(
             "\n"
             f"=== {n} samples over {self.duration_s:.0f}s ===\n"
-            f"yaw:  variance={yaw_var:.6f} rad^2 (std={yaw_std_deg:.3f} deg) | "
+            f"yaw:  variance={yaw_var:.3e} rad^2 (std={yaw_std_deg:.4f} deg) | "
             f"configured process noise={CONFIGURED_YAW_VARIANCE} -> {verdict(yaw_var, CONFIGURED_YAW_VARIANCE)}\n"
-            f"vyaw: variance={vyaw_var:.6f} (rad/s)^2 (std={vyaw_std_degs:.3f} deg/s) | "
+            f"vyaw: variance={vyaw_var:.3e} (rad/s)^2 (std={vyaw_std_degs:.4f} deg/s) | "
             f"configured process noise={CONFIGURED_VYAW_VARIANCE} -> {verdict(vyaw_var, CONFIGURED_VYAW_VARIANCE)}"
         )
 
