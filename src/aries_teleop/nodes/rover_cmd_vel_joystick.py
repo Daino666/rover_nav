@@ -23,6 +23,11 @@ class RoverCmdVelJoystick(Node):
         self.declare_parameter("invert_linear", False)
         self.declare_parameter("invert_angular", False)
 
+        # Zeroes angular.z unconditionally -- for isolating straight-line
+        # drift tests (e.g. IMU-yaw-while-driving characterization) from any
+        # human zigzag/steering-correction input.
+        self.declare_parameter("forward_only", False)
+
         self.declare_parameter("deadzone", 0.08)
         self.declare_parameter("max_linear", 0.55)
         self.declare_parameter("max_angular", 1.60)
@@ -53,6 +58,8 @@ class RoverCmdVelJoystick(Node):
         self.angular_axis = int(self.get_parameter("angular_axis").value)
         self.invert_linear = bool(self.get_parameter("invert_linear").value)
         self.invert_angular = bool(self.get_parameter("invert_angular").value)
+
+        self.forward_only = bool(self.get_parameter("forward_only").value)
 
         self.deadzone = float(self.get_parameter("deadzone").value)
         self.max_linear = float(self.get_parameter("max_linear").value)
@@ -96,9 +103,10 @@ class RoverCmdVelJoystick(Node):
             if self.enable_client is not None
             else "Drive re-arm binding disabled (empty enable_service)."
         )
+        forward_only_note = " forward_only: turn axis disabled." if self.forward_only else ""
         self.get_logger().info(
             f"Rover joystick ready. Hold LB/button {self.enable_button}. "
-            f"Publishing ONLY {self.cmd_vel_topic}. {combo}"
+            f"Publishing ONLY {self.cmd_vel_topic}. {combo}{forward_only_note}"
         )
 
     def _axis(self, msg, index):
@@ -147,8 +155,11 @@ class RoverCmdVelJoystick(Node):
             if self.invert_angular:
                 angular = -angular
 
+            forward_only = bool(self.get_parameter("forward_only").value)
             self.target_linear = self._deadzone(linear) * self.max_linear
-            self.target_angular = self._deadzone(angular) * self.max_angular
+            self.target_angular = (
+                0.0 if forward_only else self._deadzone(angular) * self.max_angular
+            )
 
             self.get_logger().info(
                 f"cmd_vel target: linear={self.target_linear:.2f}, angular={self.target_angular:.2f}",
