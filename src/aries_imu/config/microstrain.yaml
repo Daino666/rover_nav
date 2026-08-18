@@ -39,6 +39,18 @@
     # magnetometer is the only absolute yaw reference available.
     filter_heading_source: 1
 
+    # Fused yaw was observed drifting specifically while the rover drives
+    # (stable when stationary) -- consistent with motor-current EMI
+    # corrupting the magnetometer, the sole absolute heading reference above.
+    # filter_adaptive_level (driver default: 2/Moderate) is meant to reject
+    # exactly this kind of disturbance, but its own doc only lists "GQ7/CV7
+    # full support, GX5-45 limited support" -- GX5-25 (this unit) isn't
+    # mentioned, so it may be a no-op here. Try filtering the raw
+    # magnetometer signal itself instead: auto lets the device pick an
+    # appropriate cutoff rather than guessing a frequency blind.
+    mag_low_pass_filter_enable: true
+    mag_low_pass_filter_auto: true
+
     # GNSS-derived global odometry. Meaningless on an AHRS and on by default at
     # 25 Hz, so silence both rather than pay for topics that never populate.
     filter_odometry_earth_data_rate: 0
