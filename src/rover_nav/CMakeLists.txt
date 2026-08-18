@@ -24,6 +24,7 @@ install(
     scripts/check_heading.py
     scripts/map_odom_broadcaster.py
     scripts/imu_yaw_zero.py
+    scripts/imu_noise_check.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
