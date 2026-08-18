@@ -57,6 +57,10 @@ def quat_to_yaw(qx, qy, qz, qw):
     return math.atan2(siny_cosp, cosy_cosp)
 
 
+def normalize_angle(angle):
+    return math.atan2(math.sin(angle), math.cos(angle))
+
+
 def point_global_to_local(point, yaw, pos):
     dx = point[0] - pos[0]
     dy = point[1] - pos[1]
@@ -112,6 +116,20 @@ class CmdVelArbiter(Node):
         self.car_pos = None
         self.car_yaw = None
         self.last_odom_time = None
+
+        # ---- yaw zeroing, done here rather than relying solely on
+        # ekf_config.yaml's imu0_relative: true. robot_localization's own
+        # relative-mode zeroing (ros_filter.cpp preparePose(): step 7g)
+        # correctly zeros the *sensor's* contribution against its first
+        # reading, but a *separate* step (7h) then applies target_frame_trans
+        # -- a live TF lookup through the filter's own currently-published
+        # odom->base_link -- on top of that. Since that transform reflects
+        # whatever the filter's own state happens to be at that exact
+        # processing instant (tick timing/settling, not a fixed value), the
+        # final fused yaw isn't reliably 0 on the first reading even with
+        # imu0_relative: true. Zeroing again here, against the first reading
+        # this node itself sees, is fully within code we control.
+        self._yaw_offset = None
         self.drive_enabled = False
         self.drive_enabled_seen = False
         self.estopped = False
@@ -173,7 +191,16 @@ class CmdVelArbiter(Node):
     def _on_odom(self, msg):
         self.car_pos = [msg.pose.pose.position.x, msg.pose.pose.position.y]
         q = msg.pose.pose.orientation
-        self.car_yaw = quat_to_yaw(q.x, q.y, q.z, q.w)
+        raw_yaw = quat_to_yaw(q.x, q.y, q.z, q.w)
+
+        if self._yaw_offset is None:
+            self._yaw_offset = raw_yaw
+            self.get_logger().info(
+                f"zeroing yaw: first fused reading was {math.degrees(raw_yaw):.1f} deg, "
+                "treating that as forward from here on"
+            )
+
+        self.car_yaw = normalize_angle(raw_yaw - self._yaw_offset)
         self.last_odom_time = time.monotonic()
 
     def _on_teleop(self, msg):
