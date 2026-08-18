@@ -190,7 +190,7 @@ def generate_launch_description():
                               description="3DM-GX5-AHRS serial port."),
         DeclareLaunchArgument("imu_baudrate", default_value="115200"),
         DeclareLaunchArgument("imu_frame", default_value="imu_frame"),
-        DeclareLaunchArgument("imu_topic", default_value="/microstrain/imu/data"),
+        DeclareLaunchArgument("imu_topic", default_value="/microstrain/ekf/imu/data"),
 
         *_robot_model_nodes(),
 

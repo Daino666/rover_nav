@@ -126,7 +126,7 @@ class FullHardwareChecker(Node):
         self.declare_parameter("can_interface", "can0")
         self.declare_parameter("use_imu", "auto")
         self.declare_parameter("imu_port", "/dev/microstrain_main")
-        self.declare_parameter("imu_topic", "/microstrain/imu/data")
+        self.declare_parameter("imu_topic", "/microstrain/ekf/imu/data")
         self.declare_parameter("imu_frame", "imu_frame")
         self.declare_parameter("expected_odrive_axes", 6)
         self.declare_parameter("realsense_color_topic", "/gripper_camera/color/image_raw")

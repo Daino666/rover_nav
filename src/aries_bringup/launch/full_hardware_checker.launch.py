@@ -15,7 +15,7 @@ def generate_launch_description():
         DeclareLaunchArgument("use_imu", default_value="auto"),
         DeclareLaunchArgument("imu_port", default_value="/dev/microstrain_main"),
         DeclareLaunchArgument("imu_frame", default_value="imu_frame"),
-        DeclareLaunchArgument("imu_topic", default_value="/microstrain/imu/data"),
+        DeclareLaunchArgument("imu_topic", default_value="/microstrain/ekf/imu/data"),
         DeclareLaunchArgument("check_imu", default_value="true"),
         DeclareLaunchArgument("require_all_rover_axes", default_value="true"),
         DeclareLaunchArgument(

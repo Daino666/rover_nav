@@ -29,7 +29,7 @@ ekf_filter_node:
     # imu_topic launch argument; the value here is the default that argument
     # carries, kept in sync so the file also works standalone.
     # ============================================
-    imu0: /microstrain/imu/data
+    imu0: /microstrain/ekf/imu/data
     imu0_config: [false, false, false,   # x, y, z
                   false, false, true,    # roll, pitch, yaw - ONLY yaw in 2D mode!
                   false, false, false,   # vx, vy, vz

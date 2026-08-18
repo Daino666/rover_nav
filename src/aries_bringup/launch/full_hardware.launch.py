@@ -64,7 +64,7 @@ def generate_launch_description():
         DeclareLaunchArgument("rover_imu_baudrate", default_value="115200"),
         DeclareLaunchArgument("rover_imu_frame", default_value="imu_frame"),
         DeclareLaunchArgument(
-            "rover_imu_topic", default_value="/microstrain/imu/data"
+            "rover_imu_topic", default_value="/microstrain/ekf/imu/data"
         ),
         DeclareLaunchArgument("use_rover_joy_node", default_value="false"),
 

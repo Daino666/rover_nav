@@ -155,13 +155,18 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "imu_topic",
-                default_value="/microstrain/imu/data",
+                default_value="/microstrain/ekf/imu/data",
                 description=(
                     "Topic the EKF and hardware checker consume. Declared here "
-                    "so callers forward one consistent name; if your installed "
-                    "driver version publishes orientation on the estimation "
-                    "filter topic instead, point this at "
-                    "/microstrain/ekf/imu/data."
+                    "so callers forward one consistent name. Switched from the "
+                    "raw /microstrain/imu/data to the driver's own estimation "
+                    "filter topic as a trial fix for fused yaw observed "
+                    "drifting while driving (motor-current EMI corrupting the "
+                    "magnetometer) -- not yet confirmed better on hardware; "
+                    "compare with check_heading.py, which still shows both "
+                    "side by side. Point back at /microstrain/imu/data if "
+                    "this doesn't help or your installed driver version "
+                    "doesn't publish this topic."
                 ),
             ),
             OpaqueFunction(function=_start_imu),

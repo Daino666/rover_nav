@@ -82,7 +82,7 @@ def generate_launch_description():
             DeclareLaunchArgument("imu_baudrate", default_value="115200"),
             DeclareLaunchArgument("imu_frame", default_value="imu_frame"),
             DeclareLaunchArgument(
-                "imu_topic", default_value="/microstrain/imu/data"
+                "imu_topic", default_value="/microstrain/ekf/imu/data"
             ),
             core,
         ]
