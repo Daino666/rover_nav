@@ -134,5 +134,83 @@
     </light>
 
     
+    <!-- AUTO-GENERATED ARUCO LANDMARKS BEGIN (tools/generate_aruco_markers.py) -->
+    <include>
+      <name>aruco_marker_51_L1</name>
+      <uri>model://aruco_marker_51</uri>
+      <pose>3.183 8.012 0.288 0 0 0</pose>
+    </include>
+    <include>
+      <name>aruco_marker_52_L2</name>
+      <uri>model://aruco_marker_52</uri>
+      <pose>7.269 9.482 0.517 0 0 0</pose>
+    </include>
+    <include>
+      <name>aruco_marker_53_L3</name>
+      <uri>model://aruco_marker_53</uri>
+      <pose>7.878 17.583 0.436 0 0 0</pose>
+    </include>
+    <include>
+      <name>aruco_marker_54_L4</name>
+      <uri>model://aruco_marker_54</uri>
+      <pose>9.225 22.389 0.568 0 0 0</pose>
+    </include>
+    <include>
+      <name>aruco_marker_55_L5</name>
+      <uri>model://aruco_marker_55</uri>
+      <pose>3.518 23.990 0.339 0 0 0</pose>
+    </include>
+    <include>
+      <name>aruco_marker_56_L6</name>
+      <uri>model://aruco_marker_56</uri>
+      <pose>0.882 16.870 0.391 0 0 0</pose>
+    </include>
+    <include>
+      <name>aruco_marker_57_L7</name>
+      <uri>model://aruco_marker_57</uri>
+      <pose>-3.944 21.415 0.071 0 0 0</pose>
+    </include>
+    <include>
+      <name>aruco_marker_58_L8</name>
+      <uri>model://aruco_marker_58</uri>
+      <pose>-5.491 16.334 0.179 0 0 0</pose>
+    </include>
+    <include>
+      <name>aruco_marker_59_L9</name>
+      <uri>model://aruco_marker_59</uri>
+      <pose>-7.695 13.528 0.104 0 0 0</pose>
+    </include>
+    <include>
+      <name>aruco_marker_60_L10</name>
+      <uri>model://aruco_marker_60</uri>
+      <pose>-1.610 12.602 0.260 0 0 0</pose>
+    </include>
+    <include>
+      <name>aruco_marker_61_L11</name>
+      <uri>model://aruco_marker_61</uri>
+      <pose>-7.715 9.721 -0.000 0 0 0</pose>
+    </include>
+    <include>
+      <name>aruco_marker_62_L12</name>
+      <uri>model://aruco_marker_62</uri>
+      <pose>-4.311 4.442 0.041 0 0 0</pose>
+    </include>
+    <include>
+      <name>aruco_marker_63_L13</name>
+      <uri>model://aruco_marker_63</uri>
+      <pose>-5.720 28.118 -0.018 0 0 0</pose>
+    </include>
+    <include>
+      <name>aruco_marker_64_L14</name>
+      <uri>model://aruco_marker_64</uri>
+      <pose>-11.438 5.230 0.028 0 0 0</pose>
+    </include>
+    <include>
+      <name>aruco_marker_65_L15</name>
+      <uri>model://aruco_marker_65</uri>
+      <pose>6.483 1.102 0.346 0 0 0</pose>
+    </include>
+    <!-- AUTO-GENERATED ARUCO LANDMARKS END -->
+
   </world>
 </sdf>
