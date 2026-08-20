@@ -1,12 +1,19 @@
 #!/usr/bin/env python3
 """
-TEB & Pure Pursuit Smooth Global Trajectory Planner & Obstacle-Aware Local Follower
-===================================================================================
+TEB & Pure Pursuit Simple Waypoint Navigator
+=============================================
 
-Runs on the physical Aries rover by default; pass --sim for the Gazebo stack.
+Runs on the physical Aries rover. Pre-generates a smooth, continuous-curvature
+(spline / TEB-smoothed) global trajectory through the given waypoints with a
+curvature-adaptive velocity profile, then tracks it with lookahead pure
+pursuit, halting briefly at each waypoint before continuing to the next.
 
-HARDWARE INTERFACE (default profile)
-------------------------------------
+Built to be a minimal, easy-to-read waypoint runner for sanity-checking
+localization (EKF/odometry) against reality -- watch the rover actually
+reach the commanded waypoints, not a full-featured navigation stack.
+
+HARDWARE INTERFACE
+-------------------
   /odometry/filtered   (nav_msgs/Odometry)  robot_localization EKF, odom -> base_footprint
   /cmd_vel             (geometry_msgs/Twist) consumed by cmd_vel_odrive_bridge
   /aries_drive/enabled (std_msgs/Bool, latched)  true only when all six axes are CLOSED_LOOP
@@ -23,30 +30,8 @@ Hardware safety layer:
   - motion is blocked until the drive reports armed and the run is started
   - stale/absent odometry (> odom_timeout_s) forces a hard stop
   - linear/angular acceleration limiting and stall-deadband compensation
-  - optional geofence radius around the start pose (the Gazebo arena box is
-    --sim only)
 
-1. Global Path Planning:
-   - Pre-generates a smooth, continuous-curvature (spline / TEB-smoothed) global
-     trajectory through waypoints before starting navigation.
-   - Calculates continuous curvature κ(s) and dynamic curvature-dependent velocity
-     profiles to prevent aggressive turns, overshoot, and wheel-slip drift.
-   - Supports open paths as well as closed circuits (--closed-loop).
-
-2. Local Planner & Follower:
-   - Tracks the smooth trajectory using curvature-adaptive Pure Pursuit with
-     lookahead scaling and heading alignment.
-   - Halts at every reached waypoint for a configurable duration (halt_time)
-     before resuming toward the next target.
-   - Accuracy Pointer System: 3D downward arrows, bullseye concentric tolerance rings,
-     and arrival error metrics for every waypoint to check landing accuracy in RViz.
-   - Lookahead & Tracking Visualizer: Publishes Lookahead Target Sphere, Lookahead
-     Steering Ray, Cross-Track Error Vector, and real-time HUD telemetry.
-   - Listens to obstacle notification topic (/obstacle_detected) and obstacle
-     positions (/obstacles/markers or /obstacles).
-   - Generates smooth local turnaround/detour splines maintaining at least
-     a parameterized minimum clearance distance around obstacles.
-   - Once cleared, smoothly rejoins and re-engages the global path.
+  ros2 run rover_nav TEB_Pure_Pursuit_Planner.py --waypoints 3.0,2.0 5.0,7.0
 """
 
 import math
@@ -64,19 +49,16 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from nav_msgs.msg import Odometry, Path
-from geometry_msgs.msg import Twist, TwistStamped, PointStamped, Point, PoseStamped
-from std_msgs.msg import Bool, Header
+from geometry_msgs.msg import Twist, Point, PoseStamped
+from std_msgs.msg import Bool
 from std_srvs.srv import SetBool, Trigger
 from visualization_msgs.msg import Marker, MarkerArray
-from tf2_ros import Buffer, TransformListener
-import tf2_geometry_msgs  # noqa: F401
 
 
 # ═══════════════════════════════════════════════════════════════
 # DEFAULT PARAMETERS & CONSTANTS
 # ═══════════════════════════════════════════════════════════════
 
-DEFAULT_BASE_VELOCITY      = 0.45   # Normal cruising speed (m/s) — Gazebo profile
 DEFAULT_MIN_VELOCITY       = 0.15   # Minimum speed on sharp curves / approach (m/s)
 DEFAULT_MAX_VELOCITY       = 0.60   # Maximum speed on straightaways (m/s)
 DEFAULT_MAX_ANGULAR_Z      = 1.0    # Maximum yaw rate (rad/s)
@@ -96,16 +78,10 @@ ALIGN_EXIT_ANGLE           = 0.30   # Hysteresis: stay in align-in-place until e
 # six ODrive axes. It ignores commands older than command_timeout_s (0.25 s by
 # default), so the control loop must keep publishing while it wants motion.
 HW_CMD_VEL_TOPIC           = '/cmd_vel'
-HW_CMD_VEL_STAMPED         = False
 HW_ODOM_TOPIC              = '/odometry/filtered'
 HW_DRIVE_ENABLED_TOPIC     = '/aries_drive/enabled'   # latched (TRANSIENT_LOCAL) Bool
 HW_DRIVE_ENABLE_SERVICE    = '/aries_drive/enable'    # std_srvs/SetBool
 HW_TELEOP_TOPIC            = '/cmd_vel/teleop'
-
-# Gazebo profile (--sim): ros2_control rover_controller wants a TwistStamped.
-SIM_CMD_VEL_TOPIC          = '/rover_controller/cmd_vel'
-SIM_CMD_VEL_STAMPED        = True
-SIM_ODOM_TOPIC             = '/odometry/filtered'
 
 # Physical caps. The bridge clamps to max_linear_mps=0.45 / max_angular_rps=2.10
 # and ramps the wheels at 3.0 rev/s^2 regardless; these keep the rover well
@@ -131,30 +107,16 @@ DEFAULT_ODOM_TIMEOUT_S     = 0.5
 
 DEFAULT_TELEOP_HOLD_S      = 1.0    # Autonomy stays suspended this long after the last manual command
 DEFAULT_TELEOP_DEADBAND    = 0.02   # A joystick Twist below this counts as "not driving"
-DEFAULT_GEOFENCE_RADIUS    = 0.0    # m from the start pose; 0 disables
 DEFAULT_ARM_RETRY_S        = 2.0
-
-# Obstacle avoidance parameters
-DEFAULT_MIN_OBS_TRIGGER_DIST = 1.8  # Distance (m) ahead to trigger turnaround detour
-DEFAULT_MIN_OBS_CLEARANCE    = 0.80 # Minimum safe radius around obstacle (m)
-DEFAULT_DETOUR_REJOIN_DIST   = 2.2  # Distance (m) downstream where detour rejoins global path
-PATH_CORRIDOR_WIDTH          = 0.45 # Half-width of path corridor monitored for obstacles (m)
-AVOID_VELOCITY               = 0.35 # Cruising speed while executing avoidance detour (m/s)
 
 # Trajectory generation & waypoint halting
 PATH_RESOLUTION              = 0.05 # Desired distance between interpolated points (m)
-WAYPOINT_GOAL_TOLERANCE      = 0.35 # Distance to reach a waypoint and trigger halt (m)
+WAYPOINT_GOAL_TOLERANCE      = 0.10 # Distance to reach a waypoint and trigger halt (m). Tightened
+                                     # from 0.35 -- below this, min_move_linear's 0.10 m/s drive
+                                     # deadband means the rover can't meaningfully crawl any finer,
+                                     # so a smaller value risks hunting/oscillating instead of settling.
 DEFAULT_HALT_TIME            = 1.5  # Halt / pause duration (s) at each reached waypoint
 FINE_APPROACH_RADIUS         = 0.40 # Radius to engage proportional fine landing (m)
-
-# Arena bounding box safety limits (matching the Gazebo arena only — there is no
-# such box on the physical rover, which uses the geofence radius instead).
-ARENA_X_MIN   = -2.0
-ARENA_X_MAX   = 12.0
-ARENA_Y_MIN   = -2.0
-ARENA_Y_MAX   = 15.0
-ARENA_MARGIN  = 0.35
-ARENA_LOOKAHEAD_T = 0.4
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -172,40 +134,25 @@ class TrajectoryPoint:
 
 
 @dataclass
-class ObstacleEntity:
-    x: float          # Odom frame X
-    y: float          # Odom frame Y
-    radius: float     # Estimated radius (m)
-    timestamp: float
-
-
-@dataclass
 class RunConfig:
     """Everything the CLI resolves before the node is built."""
     waypoints: Optional[List[Tuple[float, float]]] = None
-    closed_loop: bool = False
     relative_coords: bool = False
     base_speed: float = HW_BASE_VELOCITY
     halt_time: float = DEFAULT_HALT_TIME
-    min_obs_dist: float = DEFAULT_MIN_OBS_TRIGGER_DIST
-    obs_clearance: float = DEFAULT_MIN_OBS_CLEARANCE
 
     # Hardware interface
-    sim: bool = False
     cmd_vel_topic: str = HW_CMD_VEL_TOPIC
-    cmd_vel_stamped: bool = HW_CMD_VEL_STAMPED
     odom_topic: str = HW_ODOM_TOPIC
     max_angular: float = HW_MAX_ANGULAR_Z
 
     # Safety / run control
     dry_run: bool = False
-    autostart: bool = False
+    autostart: bool = True
     arm: bool = False
     require_drive_enabled: bool = True
     teleop_override: bool = True
     odom_timeout_s: float = DEFAULT_ODOM_TIMEOUT_S
-    geofence_radius: float = DEFAULT_GEOFENCE_RADIUS
-    use_arena_bounds: bool = False
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -216,23 +163,12 @@ def euclidean_distance(p1: Tuple[float, float], p2: Tuple[float, float]) -> floa
     return math.hypot(p1[0] - p2[0], p1[1] - p2[1])
 
 
-def normalize_angle(angle: float) -> float:
-    """Normalize angle to [-pi, pi]."""
-    return (angle + math.pi) % (2.0 * math.pi) - math.pi
-
-
 def global_to_local(point: Tuple[float, float], yaw: float, origin: Tuple[float, float]) -> Tuple[float, float]:
     dx = point[0] - origin[0]
     dy = point[1] - origin[1]
     lx =  dx * math.cos(yaw) + dy * math.sin(yaw)
     ly = -dx * math.sin(yaw) + dy * math.cos(yaw)
     return lx, ly
-
-
-def local_to_global(lx: float, ly: float, yaw: float, origin: Tuple[float, float]) -> Tuple[float, float]:
-    dx = lx * math.cos(yaw) - ly * math.sin(yaw)
-    dy = lx * math.sin(yaw) + ly * math.cos(yaw)
-    return origin[0] + dx, origin[1] + dy
 
 
 def quat_to_yaw(qx: float, qy: float, qz: float, qw: float) -> float:
@@ -275,13 +211,12 @@ class GlobalTrajectoryGenerator:
     @staticmethod
     def generate_trajectory(
         waypoints: List[Tuple[float, float]],
-        base_velocity: float = DEFAULT_BASE_VELOCITY,
+        base_velocity: float = HW_BASE_VELOCITY,
         max_velocity: float = DEFAULT_MAX_VELOCITY,
         min_velocity: float = DEFAULT_MIN_VELOCITY,
         max_curvature: float = DEFAULT_MAX_CURVATURE,
         max_lat_accel: float = DEFAULT_MAX_LAT_ACCEL,
-        resolution: float = PATH_RESOLUTION,
-        closed_loop: bool = False
+        resolution: float = PATH_RESOLUTION
     ) -> List[TrajectoryPoint]:
         if len(waypoints) < 2:
             raise ValueError("At least 2 waypoints are required to generate a trajectory.")
@@ -291,9 +226,6 @@ class GlobalTrajectoryGenerator:
         for wp in waypoints[1:]:
             if euclidean_distance(wp, filtered_wps[-1]) > 0.05:
                 filtered_wps.append(wp)
-
-        if closed_loop and euclidean_distance(filtered_wps[0], filtered_wps[-1]) > 0.1:
-            filtered_wps.append(filtered_wps[0])
 
         wps_arr = np.array(filtered_wps)
         num_pts = len(wps_arr)
@@ -309,12 +241,10 @@ class GlobalTrajectoryGenerator:
             # Parametric B-Spline interpolation
             k_spline = min(3, num_pts - 1)
             try:
-                # Parametric spline fitting
                 tck, u = interpolate.splprep(
                     [wps_arr[:, 0], wps_arr[:, 1]],
                     s=0.0,
-                    k=k_spline,
-                    per=closed_loop
+                    k=k_spline
                 )
                 # Estimate total path length
                 diffs = np.diff(wps_arr, axis=0)
@@ -336,9 +266,8 @@ class GlobalTrajectoryGenerator:
         if len(x_dense) > 0:
             x_dense[0] = wps_arr[0, 0]
             y_dense[0] = wps_arr[0, 1]
-            if not closed_loop:
-                x_dense[-1] = wps_arr[-1, 0]
-                y_dense[-1] = wps_arr[-1, 1]
+            x_dense[-1] = wps_arr[-1, 0]
+            y_dense[-1] = wps_arr[-1, 1]
 
         # Compute first and second derivatives along spline
         dx = np.gradient(x_dense)
@@ -378,8 +307,8 @@ class GlobalTrajectoryGenerator:
         for i in range(len(target_speeds) - 2, -1, -1):
             target_speeds[i] = min(target_speeds[i], target_speeds[i + 1] + 0.05)
 
-        # De-ramp speed near goal for open paths
-        if not closed_loop and len(target_speeds) > 10:
+        # De-ramp speed near goal
+        if len(target_speeds) > 10:
             deramp_distance = 1.0
             total_len = cum_dist[-1]
             for i in range(len(target_speeds)):
@@ -404,106 +333,51 @@ class GlobalTrajectoryGenerator:
 
 
 # ═══════════════════════════════════════════════════════════════
-# LOCAL DETOUR & TURNAROUND GENERATOR
-# ═══════════════════════════════════════════════════════════════
-
-class LocalDetourPlanner:
-    """
-    Generates a smooth avoidance detour spline around an obstacle, maintaining
-    at least a specified minimum clearance distance, and rejoins the global path.
-    """
-
-    @staticmethod
-    def generate_detour(
-        start_pose: Tuple[float, float, float],
-        obstacle: ObstacleEntity,
-        global_traj: List[TrajectoryPoint],
-        closest_idx: int,
-        min_clearance: float = DEFAULT_MIN_OBS_CLEARANCE,
-        rejoin_distance: float = DEFAULT_DETOUR_REJOIN_DIST,
-        avoid_velocity: float = AVOID_VELOCITY,
-        resolution: float = PATH_RESOLUTION
-    ) -> Optional[List[TrajectoryPoint]]:
-        x_r, y_r, yaw_r = start_pose
-        obs_x, obs_y = obstacle.x, obstacle.y
-        obs_radius = max(obstacle.radius, 0.2)
-        required_clearance = obs_radius + min_clearance
-
-        # Find where obstacle projects onto global path
-        dists_to_obs = [euclidean_distance((tp.x, tp.y), (obs_x, obs_y)) for tp in global_traj]
-        obs_nearest_idx = int(np.argmin(dists_to_obs))
-        obs_path_point = global_traj[obs_nearest_idx]
-
-        # Determine avoidance side (turn right or turn left depending on relative angle)
-        lx, ly = global_to_local((obs_x, obs_y), yaw_r, (x_r, y_r))
-        side = 1.0 if ly <= 0.0 else -1.0
-
-        # Normal vector to path at obstacle
-        path_yaw = obs_path_point.yaw
-        normal_x = -math.sin(path_yaw) * side
-        normal_y =  math.cos(path_yaw) * side
-
-        envelope_clearance = required_clearance * 1.25
-        tangent_x = math.cos(path_yaw)
-        tangent_y = math.sin(path_yaw)
-
-        entry_x = obs_x - 0.6 * required_clearance * tangent_x + normal_x * (required_clearance * 0.95)
-        entry_y = obs_y - 0.6 * required_clearance * tangent_y + normal_y * (required_clearance * 0.95)
-
-        apex_x = obs_x + normal_x * envelope_clearance
-        apex_y = obs_y + normal_y * envelope_clearance
-
-        exit_x = obs_x + 0.6 * required_clearance * tangent_x + normal_x * (required_clearance * 0.95)
-        exit_y = obs_y + 0.6 * required_clearance * tangent_y + normal_y * (required_clearance * 0.95)
-
-        rejoin_s = obs_path_point.s + rejoin_distance
-        rejoin_idx = obs_nearest_idx
-        for i in range(obs_nearest_idx, len(global_traj)):
-            if global_traj[i].s >= rejoin_s:
-                rejoin_idx = i
-                break
-        else:
-            rejoin_idx = len(global_traj) - 1
-
-        rejoin_point = global_traj[rejoin_idx]
-
-        control_points = [
-            (x_r, y_r),
-            (entry_x, entry_y),
-            (apex_x, apex_y),
-            (exit_x, exit_y),
-            (rejoin_point.x, rejoin_point.y)
-        ]
-
-        try:
-            detour_traj = GlobalTrajectoryGenerator.generate_trajectory(
-                control_points,
-                base_velocity=avoid_velocity,
-                max_velocity=avoid_velocity,
-                min_velocity=DEFAULT_MIN_VELOCITY,
-                resolution=resolution,
-                closed_loop=False
-            )
-            return detour_traj
-        except Exception:
-            return None
-
-
-# ═══════════════════════════════════════════════════════════════
 # CLI PARSER
 # ═══════════════════════════════════════════════════════════════
 
+def _extract_waypoint_tokens(argv):
+    """Pulls the raw strings following --waypoints out of argv by hand.
+
+    argparse's nargs='+' stops consuming values the moment a token starts
+    with '-', which breaks on negative coordinates like "-5.0,-1.0" (they
+    don't match argparse's negative-number regex since it requires a bare
+    number, not "X,Y"). Every other flag in this parser is long-form
+    (--foo), so it's safe to keep collecting tokens for --waypoints until
+    the next '--'-prefixed token.
+    """
+    waypoint_tokens = []
+    remaining = []
+    i = 0
+    collecting = False
+    while i < len(argv):
+        tok = argv[i]
+        if tok == '--waypoints':
+            collecting = True
+        elif collecting and tok.startswith('--'):
+            collecting = False
+            remaining.append(tok)
+        elif collecting:
+            waypoint_tokens.append(tok)
+        else:
+            remaining.append(tok)
+        i += 1
+    return waypoint_tokens, remaining
+
+
 def parse_cli_args(argv) -> RunConfig:
+    waypoint_tokens, argv = _extract_waypoint_tokens(argv)
+
     parser = argparse.ArgumentParser(
-        description='TEB Pure Pursuit Global & Local Planner (physical rover by default)'
+        description='Simple TEB + Pure Pursuit waypoint navigator (physical rover)'
     )
+    # Not actually parsed here -- _extract_waypoint_tokens() already pulled its
+    # values out of argv above. Declared only so --help documents it and so
+    # argparse doesn't reject a bare "--waypoints" with nothing to catch it.
     parser.add_argument(
-        '--waypoints', nargs='+', metavar='X,Y', default=None,
-        help='List of X,Y waypoints, e.g. --waypoints 3.0,2.0 5.0,7.0 8.0,2.0 0.0,0.0'
-    )
-    parser.add_argument(
-        '--closed-loop', action='store_true', default=False,
-        help='If set, generates a closed circuit trajectory looping back to start'
+        '--waypoints', nargs='*', metavar='X,Y', default=None,
+        help='List of X,Y waypoints, e.g. --waypoints 3.0,2.0 -5.0,-1.0 '
+             '(negative coordinates are fine, no quoting or "=" needed)'
     )
     parser.add_argument(
         '--relative-coords', action='store_true', default=False,
@@ -512,32 +386,18 @@ def parse_cli_args(argv) -> RunConfig:
     )
     parser.add_argument(
         '--speed', type=float, default=None,
-        help=f'Base cruising speed in m/s (default: {HW_BASE_VELOCITY} on hardware, '
-             f'{DEFAULT_BASE_VELOCITY} with --sim)'
+        help=f'Base cruising speed in m/s (default: {HW_BASE_VELOCITY})'
     )
     parser.add_argument(
         '--max-angular', type=float, default=None,
-        help=f'Yaw rate cap in rad/s (default: {HW_MAX_ANGULAR_Z} on hardware, {DEFAULT_MAX_ANGULAR_Z} with --sim)'
+        help=f'Yaw rate cap in rad/s (default: {HW_MAX_ANGULAR_Z})'
     )
     parser.add_argument(
         '--halt-time', type=float, default=DEFAULT_HALT_TIME,
         help=f'Halt duration in seconds at every reached waypoint (default: {DEFAULT_HALT_TIME}s)'
     )
-    parser.add_argument(
-        '--min-obs-dist', type=float, default=DEFAULT_MIN_OBS_TRIGGER_DIST,
-        help=f'Minimum distance to obstacle before triggering detour (default: {DEFAULT_MIN_OBS_TRIGGER_DIST} m)'
-    )
-    parser.add_argument(
-        '--obs-clearance', type=float, default=DEFAULT_MIN_OBS_CLEARANCE,
-        help=f'Minimum safe clearance around obstacle during detour (default: {DEFAULT_MIN_OBS_CLEARANCE} m)'
-    )
 
     hw = parser.add_argument_group('hardware interface & safety')
-    hw.add_argument(
-        '--sim', action='store_true', default=False,
-        help=f'Gazebo profile: TwistStamped on {SIM_CMD_VEL_TOPIC}, arena box on, '
-             'no arm check, starts immediately'
-    )
     hw.add_argument('--cmd-vel-topic', default=None, help='Override the command topic')
     hw.add_argument('--odom-topic', default=None, help='Override the odometry topic')
     hw.add_argument(
@@ -545,8 +405,8 @@ def parse_cli_args(argv) -> RunConfig:
         help='Plan, track and visualize but never advertise cmd_vel — the joystick keeps the rover'
     )
     hw.add_argument(
-        '--autostart', action='store_true', default=False,
-        help='Start driving as soon as the rover is armed and localized, without waiting for /planner/start'
+        '--no-autostart', action='store_true', default=False,
+        help='Wait for an explicit /planner/start call instead of driving immediately once armed and localized'
     )
     hw.add_argument(
         '--arm', action='store_true', default=False,
@@ -564,54 +424,39 @@ def parse_cli_args(argv) -> RunConfig:
         '--odom-timeout', type=float, default=DEFAULT_ODOM_TIMEOUT_S,
         help=f'Hard stop when odometry is older than this (default: {DEFAULT_ODOM_TIMEOUT_S}s)'
     )
-    hw.add_argument(
-        '--geofence', type=float, default=DEFAULT_GEOFENCE_RADIUS,
-        help='Latch a stop if the rover gets further than this many metres from its start pose (0 = off)'
-    )
     parsed, _ = parser.parse_known_args(argv)
 
     waypoints = None
-    if parsed.waypoints:
+    if waypoint_tokens:
         waypoints = []
-        for wp_str in parsed.waypoints:
+        for wp_str in waypoint_tokens:
             try:
                 x_str, y_str = wp_str.split(',')
                 waypoints.append((float(x_str), float(y_str)))
             except ValueError:
                 raise ValueError(f"Invalid waypoint format '{wp_str}'. Expected 'X,Y' (e.g. 3.0,2.0)")
 
-    sim = parsed.sim
-    speed = parsed.speed if parsed.speed is not None else (DEFAULT_BASE_VELOCITY if sim else HW_BASE_VELOCITY)
-    max_ang = parsed.max_angular if parsed.max_angular is not None else (
-        DEFAULT_MAX_ANGULAR_Z if sim else HW_MAX_ANGULAR_Z
-    )
-    if not sim:
-        # Never ask the bridge for more than it will pass through, so the twist
-        # the controller reasons about is the twist the wheels receive.
-        speed = min(speed, HW_MAX_LINEAR_CAP)
-        max_ang = min(max_ang, HW_MAX_ANGULAR_CAP)
+    speed = parsed.speed if parsed.speed is not None else HW_BASE_VELOCITY
+    max_ang = parsed.max_angular if parsed.max_angular is not None else HW_MAX_ANGULAR_Z
+    # Never ask the bridge for more than it will pass through, so the twist
+    # the controller reasons about is the twist the wheels receive.
+    speed = min(speed, HW_MAX_LINEAR_CAP)
+    max_ang = min(max_ang, HW_MAX_ANGULAR_CAP)
 
     return RunConfig(
         waypoints=waypoints,
-        closed_loop=parsed.closed_loop,
         relative_coords=parsed.relative_coords,
         base_speed=speed,
         halt_time=parsed.halt_time,
-        min_obs_dist=parsed.min_obs_dist,
-        obs_clearance=parsed.obs_clearance,
-        sim=sim,
-        cmd_vel_topic=parsed.cmd_vel_topic or (SIM_CMD_VEL_TOPIC if sim else HW_CMD_VEL_TOPIC),
-        cmd_vel_stamped=SIM_CMD_VEL_STAMPED if sim else HW_CMD_VEL_STAMPED,
-        odom_topic=parsed.odom_topic or (SIM_ODOM_TOPIC if sim else HW_ODOM_TOPIC),
+        cmd_vel_topic=parsed.cmd_vel_topic or HW_CMD_VEL_TOPIC,
+        odom_topic=parsed.odom_topic or HW_ODOM_TOPIC,
         max_angular=max_ang,
         dry_run=parsed.dry_run,
-        autostart=parsed.autostart or sim,
-        arm=parsed.arm and not sim,
-        require_drive_enabled=(not parsed.ignore_drive_state) and not sim,
-        teleop_override=(not parsed.no_teleop_override) and not sim,
+        autostart=not parsed.no_autostart,
+        arm=parsed.arm,
+        require_drive_enabled=not parsed.ignore_drive_state,
+        teleop_override=not parsed.no_teleop_override,
         odom_timeout_s=parsed.odom_timeout,
-        geofence_radius=max(0.0, parsed.geofence),
-        use_arena_bounds=sim,
     )
 
 
@@ -621,15 +466,12 @@ def parse_cli_args(argv) -> RunConfig:
 
 class TEBPurePursuitPlannerNode(Node):
     """
-    ROS 2 Node executing smooth global trajectory planning and obstacle-aware
-    pure pursuit local following with safe detour turnaround, accuracy pointers,
-    and waypoint halting.
+    ROS 2 Node executing smooth global trajectory planning and pure pursuit
+    local following with waypoint halting.
     """
 
     STATE_INIT               = "INITIALIZING"
     STATE_FOLLOW_GLOBAL      = "FOLLOWING_GLOBAL_PATH"
-    STATE_AVOID_OBSTACLE     = "AVOIDING_OBSTACLE"
-    STATE_REENGAGE_GLOBAL    = "REENGAGING_GLOBAL_PATH"
     STATE_PAUSE_WAYPOINT     = "PAUSED_AT_WAYPOINT"
     STATE_GOAL_REACHED       = "GOAL_REACHED"
 
@@ -643,17 +485,11 @@ class TEBPurePursuitPlannerNode(Node):
         self.declare_parameter('max_angular_z', self.cfg.max_angular)
         self.declare_parameter('max_curvature', DEFAULT_MAX_CURVATURE)
         self.declare_parameter('halt_time', self.cfg.halt_time)
-        self.declare_parameter('min_obstacle_distance', self.cfg.min_obs_dist)
-        self.declare_parameter('obstacle_clearance', self.cfg.obs_clearance)
         self.declare_parameter('goal_tolerance', WAYPOINT_GOAL_TOLERANCE)
-        self.declare_parameter('closed_loop', self.cfg.closed_loop)
         self.declare_parameter('use_relative_coords', self.cfg.relative_coords)
-        self.declare_parameter('obstacle_detected_topic', '/obstacle_detected')
-        self.declare_parameter('obstacle_markers_topic', '/obstacles/markers')
 
         # Hardware interface & safety limits
         self.declare_parameter('cmd_vel_topic', self.cfg.cmd_vel_topic)
-        self.declare_parameter('cmd_vel_stamped', self.cfg.cmd_vel_stamped)
         self.declare_parameter('odom_topic', self.cfg.odom_topic)
         self.declare_parameter('drive_enabled_topic', HW_DRIVE_ENABLED_TOPIC)
         self.declare_parameter('drive_enable_service', HW_DRIVE_ENABLE_SERVICE)
@@ -661,8 +497,6 @@ class TEBPurePursuitPlannerNode(Node):
         self.declare_parameter('require_drive_enabled', self.cfg.require_drive_enabled)
         self.declare_parameter('teleop_override', self.cfg.teleop_override)
         self.declare_parameter('odom_timeout_s', self.cfg.odom_timeout_s)
-        self.declare_parameter('geofence_radius', self.cfg.geofence_radius)
-        self.declare_parameter('use_arena_bounds', self.cfg.use_arena_bounds)
         self.declare_parameter('linear_accel', DEFAULT_LINEAR_ACCEL)
         self.declare_parameter('linear_decel', DEFAULT_LINEAR_DECEL)
         self.declare_parameter('angular_accel', DEFAULT_ANGULAR_ACCEL)
@@ -673,9 +507,7 @@ class TEBPurePursuitPlannerNode(Node):
         if self.cfg.waypoints:
             self.raw_waypoints = list(self.cfg.waypoints)
         else:
-            self.raw_waypoints = [(3.0, 2.0), (5.0, 7.0), (8.0, 2.0), (0.0, 0.0)]
-
-        self.closed_loop = self.cfg.closed_loop
+            self.raw_waypoints = [(-5.0, -1.0)]
 
         # State variables
         self.state = self.STATE_INIT
@@ -685,21 +517,14 @@ class TEBPurePursuitPlannerNode(Node):
 
         # Trajectories & Discrete Waypoint Tracking
         self.global_trajectory: List[TrajectoryPoint] = []
-        self.local_detour_trajectory: Optional[List[TrajectoryPoint]] = None
         self.traversed_points: List[Tuple[float, float]] = []
         self.abs_waypoints: List[Tuple[float, float]] = []
         self.waypoint_reached: List[bool] = []
         self.waypoint_arrival_errors: Dict[int, float] = {}
         self.current_wp_idx: int = 1
 
-        # Obstacles
-        self.obstacle_flag_active = False
-        self.detected_obstacles: List[ObstacleEntity] = []
-        self.active_avoidance_obstacle: Optional[ObstacleEntity] = None
-
         # Progress tracking
         self.closest_global_idx = 0
-        self.closest_detour_idx = 0
         self.pause_until_time = 0.0
         self.prev_angular_cmd = 0.0
         self.force_reacquire = False
@@ -708,13 +533,10 @@ class TEBPurePursuitPlannerNode(Node):
         # ── Hardware run control & safety state ──────────────────────────────
         self.control_period = 0.05
         self.cmd_vel_topic = str(self.get_parameter('cmd_vel_topic').value)
-        self.cmd_vel_stamped = bool(self.get_parameter('cmd_vel_stamped').value)
         self.odom_topic = str(self.get_parameter('odom_topic').value)
         self.require_drive_enabled = bool(self.get_parameter('require_drive_enabled').value)
         self.use_teleop_override = bool(self.get_parameter('teleop_override').value)
         self.odom_timeout_s = float(self.get_parameter('odom_timeout_s').value)
-        self.geofence_radius = float(self.get_parameter('geofence_radius').value)
-        self.use_arena_bounds = bool(self.get_parameter('use_arena_bounds').value)
         self.linear_accel = float(self.get_parameter('linear_accel').value)
         self.linear_decel = float(self.get_parameter('linear_decel').value)
         self.angular_accel = float(self.get_parameter('angular_accel').value)
@@ -733,18 +555,8 @@ class TEBPurePursuitPlannerNode(Node):
         self.cur_angular_cmd = 0.0
         self.gate_reason = "waiting for first odometry"
 
-        # TF Buffer for obstacle transforms
-        self.tf_buffer = Buffer()
-        self.tf_listener = TransformListener(self.tf_buffer, self)
-
         # ROS 2 Subscriptions
         self.create_subscription(Odometry, self.odom_topic, self._odom_cb, 10)
-
-        # Obstacle topic subscriptions
-        flag_topic = self.get_parameter('obstacle_detected_topic').value
-        markers_topic = self.get_parameter('obstacle_markers_topic').value
-        self.create_subscription(Bool, flag_topic, self._obstacle_flag_cb, 10)
-        self.create_subscription(MarkerArray, markers_topic, self._obstacle_markers_cb, 10)
 
         # The bridge latches /aries_drive/enabled, so match its durability or the
         # current arm state is missed until the next transition.
@@ -771,12 +583,7 @@ class TEBPurePursuitPlannerNode(Node):
         # ROS 2 Publishers.  In dry-run the cmd_vel publisher is never created:
         # cmd_vel_teleop_relay yields on the presence of another publisher, so
         # merely advertising would kill manual driving.
-        if self.cfg.dry_run:
-            self.vel_pub = None
-        elif self.cmd_vel_stamped:
-            self.vel_pub = self.create_publisher(TwistStamped, self.cmd_vel_topic, 10)
-        else:
-            self.vel_pub = self.create_publisher(Twist, self.cmd_vel_topic, 10)
+        self.vel_pub = None if self.cfg.dry_run else self.create_publisher(Twist, self.cmd_vel_topic, 10)
 
         # Run control services
         self.create_service(Trigger, '/planner/start', self._on_start_srv)
@@ -784,12 +591,9 @@ class TEBPurePursuitPlannerNode(Node):
 
         # Path and Marker Publishers for RViz
         self.global_path_pub = self.create_publisher(Path, '/planner/global_path', 10)
-        self.detour_path_pub = self.create_publisher(Path, '/planner/local_detour', 10)
-        self.planned_marker_pub = self.create_publisher(Marker, '/pure_pursuit/planned_path', 10)
         self.traversed_marker_pub = self.create_publisher(Marker, '/pure_pursuit/traversed_path', 10)
         self.target_marker_pub = self.create_publisher(MarkerArray, '/planner/lookahead_target', 10)
         self.waypoint_marker_pub = self.create_publisher(MarkerArray, '/planner/waypoint_markers', 10)
-        self.obstacle_bubble_pub = self.create_publisher(MarkerArray, '/planner/obstacle_bubbles', 10)
 
         # Control timer (20 Hz = 50 ms loop; also keeps the bridge's 0.25 s
         # command-freshness window satisfied with a five-fold margin)
@@ -799,14 +603,11 @@ class TEBPurePursuitPlannerNode(Node):
         self._log_startup_banner()
 
     def _log_startup_banner(self):
-        profile = "SIMULATION" if self.cfg.sim else "HARDWARE"
-        msg_kind = "TwistStamped" if self.cmd_vel_stamped else "Twist"
-        sink = "DRY RUN (no cmd_vel published)" if self.cfg.dry_run else \
-               f"{self.cmd_vel_topic} ({msg_kind})"
+        sink = "DRY RUN (no cmd_vel published)" if self.cfg.dry_run else f"{self.cmd_vel_topic} (Twist)"
         self.get_logger().info(
-            f"TEB Pure Pursuit Planner [{profile}] — {len(self.raw_waypoints)} waypoints, "
-            f"closed_loop={self.closed_loop}, base={self.cfg.base_speed:.2f} m/s, "
-            f"max_yaw={self.cfg.max_angular:.2f} rad/s, halt={self.cfg.halt_time:.1f}s"
+            f"Simple waypoint navigator — {len(self.raw_waypoints)} waypoints, "
+            f"base={self.cfg.base_speed:.2f} m/s, max_yaw={self.cfg.max_angular:.2f} rad/s, "
+            f"halt={self.cfg.halt_time:.1f}s"
         )
         self.get_logger().info(
             f"  odometry: {self.odom_topic} | commands: {sink} | "
@@ -814,25 +615,12 @@ class TEBPurePursuitPlannerNode(Node):
         )
         self.get_logger().info(
             f"  safety: require_armed={self.require_drive_enabled} "
-            f"odom_timeout={self.odom_timeout_s:.2f}s "
-            f"geofence={'off' if self.geofence_radius <= 0 else f'{self.geofence_radius:.1f} m'} "
-            f"arena_box={self.use_arena_bounds} teleop_override={self.use_teleop_override}"
+            f"odom_timeout={self.odom_timeout_s:.2f}s teleop_override={self.use_teleop_override}"
         )
         if self.run_started:
             self.get_logger().warn("  autostart enabled — the rover will drive as soon as it is armed and localized")
         else:
             self.get_logger().info("  run is HELD. Start it with:  ros2 service call /planner/start std_srvs/srv/Trigger")
-
-        # Obstacle avoidance has no data source on the rover since the LiDAR was
-        # removed; say so once rather than silently never detouring.
-        flag_topic = str(self.get_parameter('obstacle_detected_topic').value)
-        markers_topic = str(self.get_parameter('obstacle_markers_topic').value)
-        publishers = (self.count_publishers(flag_topic) + self.count_publishers(markers_topic))
-        if publishers == 0:
-            self.get_logger().warn(
-                f"  no publisher on {flag_topic} or {markers_topic} — obstacle detour is INACTIVE; "
-                "the rover will drive the planned path regardless of what is in front of it"
-            )
 
     # ── Odometry & State Callbacks ────────────────────────────────────────────
 
@@ -904,36 +692,6 @@ class TEBPurePursuitPlannerNode(Node):
         """Node clock in seconds (honours use_sim_time)."""
         return self.get_clock().now().nanoseconds * 1e-9
 
-    def _obstacle_flag_cb(self, msg: Bool):
-        self.obstacle_flag_active = msg.data
-
-    def _obstacle_markers_cb(self, msg: MarkerArray):
-        """Extracts obstacle positions and extents in odom frame."""
-        now = time.time()
-        obstacles: List[ObstacleEntity] = []
-
-        for marker in msg.markers:
-            if marker.action == Marker.DELETE or not marker.points:
-                continue
-
-            pts = np.array([[p.x, p.y, p.z] for p in marker.points])
-            cx, cy, cz = pts.mean(axis=0)
-
-            rad = float(np.max(np.linalg.norm(pts[:, :2] - np.array([cx, cy]), axis=1)))
-            rad = max(rad, 0.25)
-
-            pt = PointStamped()
-            pt.header = marker.header
-            pt.point.x, pt.point.y, pt.point.z = float(cx), float(cy), float(cz)
-
-            try:
-                pt_odom = self.tf_buffer.transform(pt, 'odom', timeout=rclpy.duration.Duration(seconds=0.05))
-                obstacles.append(ObstacleEntity(x=pt_odom.point.x, y=pt_odom.point.y, radius=rad, timestamp=now))
-            except Exception:
-                obstacles.append(ObstacleEntity(x=float(cx), y=float(cy), radius=rad, timestamp=now))
-
-        self.detected_obstacles = obstacles
-
     # ── Global Trajectory Initialization ──────────────────────────────────────
 
     def _initialize_global_trajectory(self):
@@ -958,7 +716,6 @@ class TEBPurePursuitPlannerNode(Node):
         self.waypoint_arrival_errors = {0: 0.0}
         self.current_wp_idx = 1
         self.closest_global_idx = 0
-        self.closest_detour_idx = 0
         self.prev_angular_cmd = 0.0
 
         base_speed = self.get_parameter('base_velocity').value
@@ -971,8 +728,7 @@ class TEBPurePursuitPlannerNode(Node):
             min_velocity=DEFAULT_MIN_VELOCITY,
             max_curvature=max_curv,
             max_lat_accel=DEFAULT_MAX_LAT_ACCEL,
-            resolution=PATH_RESOLUTION,
-            closed_loop=self.closed_loop
+            resolution=PATH_RESOLUTION
         )
 
         self.state = self.STATE_FOLLOW_GLOBAL
@@ -1019,16 +775,6 @@ class TEBPurePursuitPlannerNode(Node):
         if self.require_drive_enabled and not self.drive_enabled:
             reason = "drive not armed" if self.drive_enabled_seen else "drive arm state unknown"
             return False, reason
-        if self.geofence_radius > 0.0 and self.start_pos is not None:
-            drift = euclidean_distance(self.car_pos, self.start_pos)
-            if drift > self.geofence_radius:
-                if not self.estopped:
-                    self.estopped = True
-                    self.get_logger().error(
-                        f"🚧 GEOFENCE BREACH: {drift:.2f} m from start exceeds "
-                        f"{self.geofence_radius:.2f} m — latching stop"
-                    )
-                return False, "geofence breach"
         return True, ""
 
     def _hard_stop(self, reason: str):
@@ -1081,30 +827,26 @@ class TEBPurePursuitPlannerNode(Node):
                 return
 
         # Parked at the goal: keep a fresh zero twist on the wire so the drive
-        # holds a commanded stop instead of timing out into one.
+        # holds a commanded stop instead of timing out into one. Throttled log
+        # so an idle terminal reads as "done" rather than "hung".
         if self.state == self.STATE_GOAL_REACHED:
             self._publish_raw(0.0, 0.0)
             self._publish_traversed_marker()
             self._publish_waypoint_markers()
+            self.get_logger().info(
+                "🎯 parked at goal, holding station", throttle_duration_sec=5.0
+            )
             return
 
         # Handle pause / halt at waypoint
         if self.state == self.STATE_PAUSE_WAYPOINT:
             if now >= self.pause_until_time:
                 if self.current_wp_idx >= len(self.abs_waypoints):
-                    if self.closed_loop:
-                        self.current_wp_idx = 1
-                        self.closest_global_idx = 0
-                        self.waypoint_reached = [True] + [False] * (len(self.abs_waypoints) - 1)
-                        self.waypoint_arrival_errors = {0: 0.0}
-                        self.state = self.STATE_FOLLOW_GLOBAL
-                        self.get_logger().info("🔄 Starting next closed-loop circuit lap!")
-                    else:
-                        self.state = self.STATE_GOAL_REACHED
-                        self.get_logger().info("🎯 All waypoints completed! Rover is parked at goal.")
-                        self._publish_cmd_vel(0.0, 0.0)
-                        self._publish_waypoint_markers()
-                        return
+                    self.state = self.STATE_GOAL_REACHED
+                    self.get_logger().info("🎯 All waypoints completed! Rover is parked at goal.")
+                    self._publish_cmd_vel(0.0, 0.0)
+                    self._publish_waypoint_markers()
+                    return
                 else:
                     self.state = self.STATE_FOLLOW_GLOBAL
                     self.get_logger().info(f"🚀 Resuming navigation toward Waypoint {self.current_wp_idx}...")
@@ -1113,36 +855,14 @@ class TEBPurePursuitPlannerNode(Node):
                 self._publish_waypoint_markers()
                 return
 
-        # Check for obstacles in corridor
-        blocking_obstacle = self._find_blocking_obstacle()
-
-        # State Machine Transitions
-        if self.state == self.STATE_FOLLOW_GLOBAL:
-            if blocking_obstacle is not None:
-                self.get_logger().warn(
-                    f"⚠️ Obstacle detected at ({blocking_obstacle.x:.2f}, {blocking_obstacle.y:.2f}) "
-                    f"— initiating turnaround detour with safe clearance!"
-                )
-                self._initiate_detour(blocking_obstacle)
-
-        elif self.state == self.STATE_AVOID_OBSTACLE:
-            if self.local_detour_trajectory and self.closest_detour_idx >= len(self.local_detour_trajectory) - 3:
-                self.get_logger().info("✅ Detour completed — resuming global trajectory follower.")
-                self.local_detour_trajectory = None
-                self.active_avoidance_obstacle = None
-                self.state = self.STATE_FOLLOW_GLOBAL
-
         # Execute active controller
-        if self.state == self.STATE_AVOID_OBSTACLE and self.local_detour_trajectory:
-            self._execute_trajectory_tracking(self.local_detour_trajectory, is_detour=True)
-        elif self.state == self.STATE_FOLLOW_GLOBAL:
+        if self.state == self.STATE_FOLLOW_GLOBAL:
             self._check_waypoint_reach(now)
             if self.state != self.STATE_PAUSE_WAYPOINT:
-                self._execute_trajectory_tracking(self.global_trajectory, is_detour=False)
+                self._execute_trajectory_tracking(self.global_trajectory)
 
         # Publish visualizations
         self._publish_traversed_marker()
-        self._publish_obstacle_bubbles()
         self._publish_waypoint_markers()
 
     # ── Waypoint Reach & Halt Detection ───────────────────────────────────────
@@ -1164,7 +884,7 @@ class TEBPurePursuitPlannerNode(Node):
             self.state = self.STATE_PAUSE_WAYPOINT
 
             wp_label = f"Waypoint {self.current_wp_idx}"
-            if self.current_wp_idx == len(self.abs_waypoints) - 1 and not self.closed_loop:
+            if self.current_wp_idx == len(self.abs_waypoints) - 1:
                 wp_label = "Final Goal"
 
             self.get_logger().info(
@@ -1175,63 +895,13 @@ class TEBPurePursuitPlannerNode(Node):
             self.current_wp_idx += 1
             self._publish_waypoint_markers()
 
-    # ── Obstacle Detection & Assessment ───────────────────────────────────────
-
-    def _find_blocking_obstacle(self) -> Optional[ObstacleEntity]:
-        min_trigger_dist = self.get_parameter('min_obstacle_distance').value
-        obs_clearance = self.get_parameter('obstacle_clearance').value
-
-        for obs in self.detected_obstacles:
-            lx, ly = global_to_local((obs.x, obs.y), self.car_yaw, self.car_pos)
-            if 0.1 < lx <= min_trigger_dist:
-                corridor_bound = PATH_CORRIDOR_WIDTH + obs.radius + obs_clearance * 0.5
-                if abs(ly) <= corridor_bound:
-                    return obs
-
-        if self.obstacle_flag_active:
-            target_idx = min(self.closest_global_idx + int(min_trigger_dist / PATH_RESOLUTION), len(self.global_trajectory) - 1)
-            target_tp = self.global_trajectory[target_idx]
-            virtual_obs = ObstacleEntity(
-                x=target_tp.x,
-                y=target_tp.y,
-                radius=0.35,
-                timestamp=time.time()
-            )
-            return virtual_obs
-
-        return None
-
-    def _initiate_detour(self, obstacle: ObstacleEntity):
-        obs_clearance = self.get_parameter('obstacle_clearance').value
-        detour = LocalDetourPlanner.generate_detour(
-            start_pose=(self.car_pos[0], self.car_pos[1], self.car_yaw),
-            obstacle=obstacle,
-            global_traj=self.global_trajectory,
-            closest_idx=self.closest_global_idx,
-            min_clearance=obs_clearance,
-            rejoin_distance=DEFAULT_DETOUR_REJOIN_DIST,
-            avoid_velocity=AVOID_VELOCITY,
-            resolution=PATH_RESOLUTION
-        )
-
-        if detour is not None and len(detour) > 2:
-            self.local_detour_trajectory = detour
-            self.closest_detour_idx = 0
-            self.active_avoidance_obstacle = obstacle
-            self.state = self.STATE_AVOID_OBSTACLE
-            self._publish_detour_path_visualization(detour)
-            self.get_logger().info(f"✨ Safe detour curve planned with {len(detour)} points.")
-        else:
-            self.get_logger().error("Failed to generate feasible detour spline! Pausing.")
-            self._publish_cmd_vel(0.0, 0.0)
-
     # ── Trajectory Tracking & Pure Pursuit Controller ─────────────────────────
 
-    def _execute_trajectory_tracking(self, trajectory: List[TrajectoryPoint], is_detour: bool):
-        # Progress-constrained search window to prevent jumping to endpoints on loops or self-crossings.
+    def _execute_trajectory_tracking(self, trajectory: List[TrajectoryPoint]):
+        # Progress-constrained search window to prevent jumping to endpoints on self-crossings.
         # After a manual override or a re-plan the rover may be anywhere relative
         # to the path, so re-acquire once over the whole trajectory.
-        last_idx = self.closest_detour_idx if is_detour else self.closest_global_idx
+        last_idx = self.closest_global_idx
         if self.force_reacquire:
             self.force_reacquire = False
             search_start = 0
@@ -1246,23 +916,20 @@ class TEBPurePursuitPlannerNode(Node):
         cross_track_err = window_dists[best_window_idx]
         closest_tp = trajectory[closest_idx]
 
-        if is_detour:
-            self.closest_detour_idx = closest_idx
-        else:
-            self.closest_global_idx = closest_idx
+        self.closest_global_idx = closest_idx
 
         # Check goal arrival
         goal_point = trajectory[-1]
         dist_to_goal = euclidean_distance(self.car_pos, (goal_point.x, goal_point.y))
         goal_tol = self.get_parameter('goal_tolerance').value
 
-        if not self.closed_loop and not is_detour and dist_to_goal < goal_tol and self.current_wp_idx >= len(self.abs_waypoints):
+        if dist_to_goal < goal_tol and self.current_wp_idx >= len(self.abs_waypoints):
             self.state = self.STATE_GOAL_REACHED
             self.get_logger().info("🎯 Reached final destination! Stopping rover.")
             self._publish_cmd_vel(0.0, 0.0)
             return
 
-        if not is_detour and dist_to_goal < FINE_APPROACH_RADIUS and not self.closed_loop and self.current_wp_idx >= len(self.abs_waypoints):
+        if dist_to_goal < FINE_APPROACH_RADIUS and self.current_wp_idx >= len(self.abs_waypoints):
             linear_v, angular_w = self._fine_proportional_approach((goal_point.x, goal_point.y))
             self._publish_cmd_vel(linear_v, angular_w)
             self._log_telemetry(cross_track_err, 0.0, linear_v, angular_w, "fine approach")
@@ -1285,12 +952,10 @@ class TEBPurePursuitPlannerNode(Node):
         else:
             target_tp = trajectory[-1]
 
-        # Publish lookahead target marker with vector ray and CTE line
+        # Publish lookahead target marker
         self._publish_target_marker(
             target_pos=(target_tp.x, target_tp.y),
-            closest_pos=(closest_tp.x, closest_tp.y),
-            lookahead_dist=lookahead_dist,
-            cross_track_err=cross_track_err
+            closest_pos=(closest_tp.x, closest_tp.y)
         )
 
         # Pure Pursuit Curvature Calculation
@@ -1326,10 +991,8 @@ class TEBPurePursuitPlannerNode(Node):
             angular_cmd = float(np.clip(angular_cmd, -max_ang, max_ang))
 
         self.prev_angular_cmd = angular_cmd
-        linear_cmd, angular_cmd = self._clamp_to_arena(linear_cmd, angular_cmd)
         self._publish_cmd_vel(linear_cmd, angular_cmd)
-        self._log_telemetry(cross_track_err, heading_error, linear_cmd, angular_cmd,
-                            "detour" if is_detour else self.state)
+        self._log_telemetry(cross_track_err, heading_error, linear_cmd, angular_cmd, self.state)
 
     def _log_telemetry(self, cross_track_err: float, heading_error: float,
                        linear_cmd: float, angular_cmd: float, phase: str):
@@ -1361,42 +1024,6 @@ class TEBPurePursuitPlannerNode(Node):
 
         angular_z = float(np.clip(1.8 * heading_error, -max_ang * 0.8, max_ang * 0.8))
         return linear_x, angular_z
-
-    def _clamp_to_arena(self, linear: float, angular: float) -> Tuple[float, float]:
-        # Simulation-only: the box matches the Gazebo arena and means nothing on
-        # the physical rover, which is fenced by geofence_radius instead.
-        if not self.use_arena_bounds:
-            return linear, angular
-        if self.car_pos is None or self.car_yaw is None:
-            return linear, angular
-
-        x, y = self.car_pos
-        pred_x = x + linear * math.cos(self.car_yaw) * ARENA_LOOKAHEAD_T
-        pred_y = y + linear * math.sin(self.car_yaw) * ARENA_LOOKAHEAD_T
-
-        out_of_bounds = (
-            pred_x < ARENA_X_MIN + ARENA_MARGIN or
-            pred_x > ARENA_X_MAX - ARENA_MARGIN or
-            pred_y < ARENA_Y_MIN + ARENA_MARGIN or
-            pred_y > ARENA_Y_MAX - ARENA_MARGIN
-        )
-
-        if not out_of_bounds:
-            return linear, angular
-
-        center = ((ARENA_X_MIN + ARENA_X_MAX) / 2.0, (ARENA_Y_MIN + ARENA_Y_MAX) / 2.0)
-        lx, ly = global_to_local(center, self.car_yaw, self.car_pos)
-        ld = math.hypot(lx, ly)
-        curv = (2.0 * ly / ld**2) if ld > 0.01 else 0.0
-        max_ang = self.get_parameter('max_angular_z').value
-        correction_angular = float(np.clip(curv * linear, -max_ang, max_ang))
-        safe_linear = min(linear, 0.15)
-
-        self.get_logger().warn(
-            "⚠️ Approaching arena boundary — steering back toward arena center",
-            throttle_duration_sec=1.0
-        )
-        return safe_linear, correction_angular
 
     # ── Command & Visualization Publishers ────────────────────────────────────
 
@@ -1446,16 +1073,9 @@ class TEBPurePursuitPlannerNode(Node):
         """Put a twist on the wire unchanged (stops, and forwarded teleop)."""
         if self.vel_pub is None:   # --dry-run
             return
-        if self.cmd_vel_stamped:
-            msg = TwistStamped()
-            msg.header.stamp = self.get_clock().now().to_msg()
-            msg.header.frame_id = 'base_footprint'
-            msg.twist.linear.x = float(linear_x)
-            msg.twist.angular.z = float(angular_z)
-        else:
-            msg = Twist()
-            msg.linear.x = float(linear_x)
-            msg.angular.z = float(angular_z)
+        msg = Twist()
+        msg.linear.x = float(linear_x)
+        msg.angular.z = float(angular_z)
         self.vel_pub.publish(msg)
 
     def _publish_global_path_visualization(self):
@@ -1476,36 +1096,6 @@ class TEBPurePursuitPlannerNode(Node):
             pose.pose.position.z = 0.05
             path_msg.poses.append(pose)
         self.global_path_pub.publish(path_msg)
-
-        planned_marker = Marker()
-        planned_marker.header.frame_id = 'odom'
-        planned_marker.header.stamp = now
-        planned_marker.ns = 'pure_pursuit'
-        planned_marker.id = 1
-        planned_marker.type = Marker.LINE_STRIP
-        planned_marker.action = Marker.ADD
-        planned_marker.scale.x = 0.06
-        planned_marker.color.r = 0.1
-        planned_marker.color.g = 0.75
-        planned_marker.color.b = 1.0
-        planned_marker.color.a = 1.0
-        planned_marker.points = [Point(x=float(tp.x), y=float(tp.y), z=0.05) for tp in self.global_trajectory]
-        self.planned_marker_pub.publish(planned_marker)
-
-    def _publish_detour_path_visualization(self, detour: List[TrajectoryPoint]):
-        now = self.get_clock().now().to_msg()
-        detour_path = Path()
-        detour_path.header.frame_id = 'odom'
-        detour_path.header.stamp = now
-        for tp in detour:
-            pose = PoseStamped()
-            pose.header.frame_id = 'odom'
-            pose.header.stamp = now
-            pose.pose.position.x = float(tp.x)
-            pose.pose.position.y = float(tp.y)
-            pose.pose.position.z = 0.08
-            detour_path.poses.append(pose)
-        self.detour_path_pub.publish(detour_path)
 
     def _publish_traversed_marker(self):
         if not self.traversed_points:
@@ -1529,24 +1119,15 @@ class TEBPurePursuitPlannerNode(Node):
     def _publish_target_marker(
         self,
         target_pos: Tuple[float, float],
-        closest_pos: Optional[Tuple[float, float]] = None,
-        lookahead_dist: float = 0.0,
-        cross_track_err: float = 0.0
+        closest_pos: Optional[Tuple[float, float]] = None
     ):
-        """
-        Publishes:
-        1. Lookahead Target Sphere (Red)
-        2. Lookahead Vector Ray connecting rover center -> target point
-        3. Cross-Track Error Normal Line connecting rover center -> closest spline point
-        4. Real-time Telemetry Text HUD above the rover
-        """
+        """Publishes the lookahead target sphere and a ray from the rover to it."""
         if self.car_pos is None:
             return
 
         now = self.get_clock().now().to_msg()
         m_array = MarkerArray()
 
-        # 1. Lookahead Target Sphere (Red)
         sphere = Marker()
         sphere.header.frame_id = 'odom'
         sphere.header.stamp = now
@@ -1566,7 +1147,6 @@ class TEBPurePursuitPlannerNode(Node):
         sphere.color.a = 0.95
         m_array.markers.append(sphere)
 
-        # 2. Lookahead Steering Vector Ray (Rover Pose -> Lookahead Target)
         ray = Marker()
         ray.header.frame_id = 'odom'
         ray.header.stamp = now
@@ -1585,243 +1165,48 @@ class TEBPurePursuitPlannerNode(Node):
         ]
         m_array.markers.append(ray)
 
-        # 3. Cross-Track Error Normal Line (Rover Pose -> Closest Path Point)
-        if closest_pos is not None:
-            cte_line = Marker()
-            cte_line.header.frame_id = 'odom'
-            cte_line.header.stamp = now
-            cte_line.ns = 'crosstrack_error'
-            cte_line.id = 12
-            cte_line.type = Marker.LINE_STRIP
-            cte_line.action = Marker.ADD
-            cte_line.scale.x = 0.03
-            cte_line.color.r = 0.9
-            cte_line.color.g = 0.1
-            cte_line.color.b = 0.9
-            cte_line.color.a = 0.9
-            cte_line.points = [
-                Point(x=float(self.car_pos[0]), y=float(self.car_pos[1]), z=0.06),
-                Point(x=float(closest_pos[0]), y=float(closest_pos[1]), z=0.06)
-            ]
-            m_array.markers.append(cte_line)
-
-        # 4. Live Rover Tracking HUD Text
-        hud = Marker()
-        hud.header.frame_id = 'odom'
-        hud.header.stamp = now
-        hud.ns = 'tracking_hud'
-        hud.id = 13
-        hud.type = Marker.TEXT_VIEW_FACING
-        hud.action = Marker.ADD
-        hud.pose.position.x = float(self.car_pos[0])
-        hud.pose.position.y = float(self.car_pos[1])
-        hud.pose.position.z = 0.90
-        hud.scale.z = 0.18
-        hud.text = f"Lookahead Ld: {lookahead_dist:.2f}m | CTE: {cross_track_err*100:.1f}cm"
-        hud.color.r, hud.color.g, hud.color.b, hud.color.a = 1.0, 1.0, 0.3, 0.95
-        m_array.markers.append(hud)
-
         self.target_marker_pub.publish(m_array)
 
     def _publish_waypoint_markers(self):
-        """
-        Publishes comprehensive waypoint visualization matching reference sketch:
-        1. Crossed-Circle Target Marker (⨂): Outer circular boundary ring + 'X' & '+' crosshairs.
-        2. Inner Precision Bullseye Ring & Center Landing Pin.
-        3. Straight Dashed Chord Lines connecting consecutive waypoints.
-        4. 3D Accuracy Downward Beacon Arrows.
-        5. Floating 3D Telemetry Text Badges (with explicit "Starting", "Reached", and "Target" status).
-        """
+        """One sphere + text label per waypoint (green=reached, amber=target, cyan=upcoming)."""
         wps_to_draw = self.abs_waypoints if self.abs_waypoints else (
-            [self.start_pos] + [wp for wp in self.raw_waypoints] if self.start_pos else [(0.0, 0.0)] + [wp for wp in self.raw_waypoints]
+            [self.start_pos] + list(self.raw_waypoints) if self.start_pos else [(0.0, 0.0)] + list(self.raw_waypoints)
         )
         if not wps_to_draw:
             return
 
         now = self.get_clock().now().to_msg()
         m_array = MarkerArray()
-        total_wps = len(wps_to_draw)
-        goal_tol = self.get_parameter('goal_tolerance').value
-        target_radius = max(goal_tol, 0.35)
 
-        # ── 1. Straight Dashed Chord Lines (Connecting Consecutive Waypoints) ─
-        dashed_chords = Marker()
-        dashed_chords.header.frame_id = 'odom'
-        dashed_chords.header.stamp = now
-        dashed_chords.ns = 'waypoints_chord_lines'
-        dashed_chords.id = 50
-        dashed_chords.type = Marker.LINE_LIST
-        dashed_chords.action = Marker.ADD
-        dashed_chords.scale.x = 0.035
-        dashed_chords.color.r = 0.95
-        dashed_chords.color.g = 0.95
-        dashed_chords.color.b = 0.95
-        dashed_chords.color.a = 0.80
-
-        chord_pairs = []
-        for i in range(total_wps - 1):
-            chord_pairs.append((wps_to_draw[i], wps_to_draw[i + 1]))
-        if self.closed_loop and total_wps > 2:
-            chord_pairs.append((wps_to_draw[-1], wps_to_draw[0]))
-
-        dash_len = 0.18
-        gap_len = 0.12
-        for p1, p2 in chord_pairs:
-            seg_dist = euclidean_distance(p1, p2)
-            if seg_dist < 1e-3:
-                continue
-            dx = (p2[0] - p1[0]) / seg_dist
-            dy = (p2[1] - p1[1]) / seg_dist
-            curr_dist = 0.0
-            while curr_dist < seg_dist:
-                d_start = curr_dist
-                d_end = min(curr_dist + dash_len, seg_dist)
-                dashed_chords.points.append(Point(x=p1[0] + dx * d_start, y=p1[1] + dy * d_start, z=0.035))
-                dashed_chords.points.append(Point(x=p1[0] + dx * d_end, y=p1[1] + dy * d_end, z=0.035))
-                curr_dist += dash_len + gap_len
-
-        m_array.markers.append(dashed_chords)
-
-        # ── 2. Individual Waypoint Target Markers (Circle + X Crosshair + Text) ─
         for i, wp in enumerate(wps_to_draw):
-            # Label designation
-            if i == 0:
-                base_label = "Starting"
-            elif i == total_wps - 1 and not self.closed_loop:
-                base_label = "Goal"
-            else:
-                base_label = f"WP {i}"
-
-            # Status determination
             is_reached = i < self.current_wp_idx or (i < len(self.waypoint_reached) and self.waypoint_reached[i])
             is_target = (i == self.current_wp_idx)
 
             if is_reached:
-                # Vibrant Reached Green
                 r, g, b, a = 0.10, 0.95, 0.25, 1.0
                 err_cm = self.waypoint_arrival_errors.get(i, 0.0) * 100.0
-                if i == 0:
-                    state_text = f"Starting [ORIGIN]"
-                else:
-                    state_text = f"{base_label} [REACHED (Err: {err_cm:.1f}cm)]"
+                label = "Start" if i == 0 else f"WP{i} reached (err {err_cm:.1f}cm)"
             elif is_target:
-                # Glowing Active Target Amber/Gold
                 r, g, b, a = 1.0, 0.78, 0.0, 1.0
-                dist_to_wp = euclidean_distance(self.car_pos, wp) if self.car_pos else 0.0
-                state_text = f"{base_label} [TARGET (Dist: {dist_to_wp:.2f}m)]"
+                label = f"WP{i} target"
             else:
-                # Crisp Upcoming Cyan / Sky Blue
                 r, g, b, a = 0.0, 0.85, 1.0, 0.85
-                state_text = f"{base_label} ({wp[0]:.2f}, {wp[1]:.2f})"
+                label = f"WP{i} ({wp[0]:.2f}, {wp[1]:.2f})"
 
-            # (A) Outer Circular Boundary Ring (LINE_STRIP)
-            ring = Marker()
-            ring.header.frame_id = 'odom'
-            ring.header.stamp = now
-            ring.ns = 'waypoints_target_circle'
-            ring.id = 100 + i
-            ring.type = Marker.LINE_STRIP
-            ring.action = Marker.ADD
-            ring.scale.x = 0.045
-            ring.color.r, ring.color.g, ring.color.b, ring.color.a = r, g, b, a
-            n_segments = 36
-            ring.points = [
-                Point(
-                    x=float(wp[0] + target_radius * math.cos(2.0 * math.pi * k / n_segments)),
-                    y=float(wp[1] + target_radius * math.sin(2.0 * math.pi * k / n_segments)),
-                    z=0.045
-                )
-                for k in range(n_segments + 1)
-            ]
-            m_array.markers.append(ring)
+            sphere = Marker()
+            sphere.header.frame_id = 'odom'
+            sphere.header.stamp = now
+            sphere.ns = 'waypoints'
+            sphere.id = 100 + i
+            sphere.type = Marker.SPHERE
+            sphere.action = Marker.ADD
+            sphere.pose.position.x = float(wp[0])
+            sphere.pose.position.y = float(wp[1])
+            sphere.pose.position.z = 0.15
+            sphere.scale.x = sphere.scale.y = sphere.scale.z = 0.3
+            sphere.color.r, sphere.color.g, sphere.color.b, sphere.color.a = r, g, b, a
+            m_array.markers.append(sphere)
 
-            # (B) 'X' Diagonal Crosshairs + Cardinal Cross Inside Circle (LINE_LIST -> ⨂)
-            cross = Marker()
-            cross.header.frame_id = 'odom'
-            cross.header.stamp = now
-            cross.ns = 'waypoints_target_cross'
-            cross.id = 200 + i
-            cross.type = Marker.LINE_LIST
-            cross.action = Marker.ADD
-            cross.scale.x = 0.038
-            cross.color.r, cross.color.g, cross.color.b, cross.color.a = r, g, b, a
-
-            diag_r = target_radius * 0.92
-            cos45 = math.cos(math.pi / 4.0) * diag_r
-            sin45 = math.sin(math.pi / 4.0) * diag_r
-            z_cross = 0.050
-
-            # Diagonal 1 (\)
-            cross.points.append(Point(x=float(wp[0] - cos45), y=float(wp[1] - sin45), z=z_cross))
-            cross.points.append(Point(x=float(wp[0] + cos45), y=float(wp[1] + sin45), z=z_cross))
-            # Diagonal 2 (/)
-            cross.points.append(Point(x=float(wp[0] - cos45), y=float(wp[1] + sin45), z=z_cross))
-            cross.points.append(Point(x=float(wp[0] + cos45), y=float(wp[1] - sin45), z=z_cross))
-            # Cardinal Horizontal (-)
-            cross.points.append(Point(x=float(wp[0] - diag_r), y=float(wp[1]), z=z_cross))
-            cross.points.append(Point(x=float(wp[0] + diag_r), y=float(wp[1]), z=z_cross))
-            # Cardinal Vertical (|)
-            cross.points.append(Point(x=float(wp[0]), y=float(wp[1] - diag_r), z=z_cross))
-            cross.points.append(Point(x=float(wp[0]), y=float(wp[1] + diag_r), z=z_cross))
-            m_array.markers.append(cross)
-
-            # (C) Inner Precision Bullseye Ring
-            inner_ring = Marker()
-            inner_ring.header.frame_id = 'odom'
-            inner_ring.header.stamp = now
-            inner_ring.ns = 'waypoints_bullseye_inner'
-            inner_ring.id = 300 + i
-            inner_ring.type = Marker.LINE_STRIP
-            inner_ring.action = Marker.ADD
-            inner_ring.scale.x = 0.035
-            inner_ring.color.r, inner_ring.color.g, inner_ring.color.b, inner_ring.color.a = r, g, b, 0.90
-            r_inner = target_radius * 0.45
-            inner_ring.points = [
-                Point(
-                    x=float(wp[0] + r_inner * math.cos(2.0 * math.pi * k / 24)),
-                    y=float(wp[1] + r_inner * math.sin(2.0 * math.pi * k / 24)),
-                    z=0.052
-                )
-                for k in range(25)
-            ]
-            m_array.markers.append(inner_ring)
-
-            # (D) Center Landing Pin (White Dot)
-            pin = Marker()
-            pin.header.frame_id = 'odom'
-            pin.header.stamp = now
-            pin.ns = 'waypoints_pin_center'
-            pin.id = 400 + i
-            pin.type = Marker.CYLINDER
-            pin.action = Marker.ADD
-            pin.pose.position.x = float(wp[0])
-            pin.pose.position.y = float(wp[1])
-            pin.pose.position.z = 0.060
-            pin.scale.x = 0.08
-            pin.scale.y = 0.08
-            pin.scale.z = 0.04
-            pin.color.r, pin.color.g, pin.color.b, pin.color.a = 1.0, 1.0, 1.0, 1.0
-            m_array.markers.append(pin)
-
-            # (E) 3D Downward Accuracy Beacon Pointer
-            ptr = Marker()
-            ptr.header.frame_id = 'odom'
-            ptr.header.stamp = now
-            ptr.ns = 'waypoints_accuracy_pointer'
-            ptr.id = 500 + i
-            ptr.type = Marker.ARROW
-            ptr.action = Marker.ADD
-            ptr.scale.x = 0.06   # Shaft diameter
-            ptr.scale.y = 0.18   # Head diameter
-            ptr.scale.z = 0.24   # Head length
-            ptr.color.r, ptr.color.g, ptr.color.b, ptr.color.a = r, g, b, 0.95
-            ptr.points = [
-                Point(x=float(wp[0]), y=float(wp[1]), z=1.10),
-                Point(x=float(wp[0]), y=float(wp[1]), z=0.08)
-            ]
-            m_array.markers.append(ptr)
-
-            # (F) Floating 3D Text Label
             txt = Marker()
             txt.header.frame_id = 'odom'
             txt.header.stamp = now
@@ -1831,42 +1216,13 @@ class TEBPurePursuitPlannerNode(Node):
             txt.action = Marker.ADD
             txt.pose.position.x = float(wp[0])
             txt.pose.position.y = float(wp[1])
-            txt.pose.position.z = 1.30
-            txt.scale.z = 0.22
-            txt.text = state_text
+            txt.pose.position.z = 0.6
+            txt.scale.z = 0.2
+            txt.text = label
             txt.color.r, txt.color.g, txt.color.b, txt.color.a = 1.0, 1.0, 1.0, 0.95
             m_array.markers.append(txt)
 
         self.waypoint_marker_pub.publish(m_array)
-
-    def _publish_obstacle_bubbles(self):
-        """Publishes safety boundary bubble markers around detected obstacles."""
-        now = self.get_clock().now().to_msg()
-        m_array = MarkerArray()
-        obs_clearance = self.get_parameter('obstacle_clearance').value
-
-        for i, obs in enumerate(self.detected_obstacles):
-            m = Marker()
-            m.header.frame_id = 'odom'
-            m.header.stamp = now
-            m.ns = 'obstacle_clearance'
-            m.id = 100 + i
-            m.type = Marker.CYLINDER
-            m.action = Marker.ADD
-            m.pose.position.x = float(obs.x)
-            m.pose.position.y = float(obs.y)
-            m.pose.position.z = 0.1
-            diam = 2.0 * (obs.radius + obs_clearance)
-            m.scale.x = float(diam)
-            m.scale.y = float(diam)
-            m.scale.z = 0.05
-            m.color.r = 1.0
-            m.color.g = 0.6
-            m.color.b = 0.0
-            m.color.a = 0.35
-            m_array.markers.append(m)
-
-        self.obstacle_bubble_pub.publish(m_array)
 
 
 # ═══════════════════════════════════════════════════════════════

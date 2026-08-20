@@ -114,6 +114,31 @@ def _start_localization(context, *args, **kwargs):
         # different boot orientations), so this fuses the pre-zeroed topic
         # as a plain absolute-yaw measurement instead of relying on
         # robot_localization's own relative-mode bookkeeping at all.
+        #
+        # TRIED (2026-08-19/20) two follow-up relays here to address
+        # motor-current EMI on the magnetometer, both reverted -- see
+        # imu_yaw_drift_handoff.md for the full investigation:
+        #
+        # 1. imu_yaw_trust_gate.py: swung the AHRS topic's own yaw covariance
+        #    between "trust" (stationary) and "ignore" (moving), based on
+        #    /odom. Made things WORSE across three variants (instant snap at
+        #    40Hz/20Hz EKF frequency, then a 2s ramp) -- introduced an
+        #    x-axis error (1.8-2.2m) the static baseline never had (only y
+        #    drifted, up to 1.7m).
+        # 2. imu_yaw_source_switch.py: switched which TOPIC's orientation got
+        #    fused entirely -- the raw, non-AHRS topic (magnetometer-immune
+        #    by construction) while moving, AHRS while stationary. Far
+        #    worse still (5m x, 13m y) -- passing raw's own offset-tracked
+        #    yaw through as a normally-trusted measurement let its unbounded
+        #    gyro bias drift get fully believed by the EKF for the whole
+        #    moving duration of every leg, instead of the EKF falling back
+        #    on its own more conservative internal dead-reckoning the way
+        #    attempt 1's covariance-starving did.
+        #
+        # Do not re-attempt either category (swinging trust in one topic, or
+        # switching which topic is fused) without new evidence explaining
+        # why the previous attempts regressed first. Static magnetometer
+        # trust (current state) is the best-known baseline.
         ekf_overrides["imu0"] = zeroed_imu_topic
         ekf_overrides["imu0_relative"] = False
         ekf_config = _ekf_config("ekf_config.yaml")

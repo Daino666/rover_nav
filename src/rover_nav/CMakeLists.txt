@@ -26,6 +26,7 @@ install(
     scripts/imu_yaw_zero.py
     scripts/imu_noise_check.py
     scripts/yaw_source_compare.py
+    scripts/imu_deep_log.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

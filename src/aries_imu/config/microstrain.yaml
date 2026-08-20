@@ -30,6 +30,13 @@
     # imu/data carries the raw sensor data set.
     imu_data_rate: 100
 
+    # imu/mag carries the raw magnetometer vector (off by default). Enabled
+    # purely for observability -- lets imu_deep_log.py see the actual field
+    # magnitude directly, the most direct evidence of real EMI (a genuine
+    # disturbance changes the field's magnitude, not just its direction).
+    # Doesn't affect fusion; nothing consumes this topic.
+    imu_mag_data_rate: 100
+
     # ekf/imu/data carries the estimation-filter output, which is where the
     # AHRS absolute heading lives. Off by default (0); enabled so the topic is
     # available to switch the EKF over to without restarting the stack.
@@ -37,6 +44,25 @@
 
     # Heading source 1 = magnetometer. The GX5-AHRS has no GNSS, so the
     # magnetometer is the only absolute yaw reference available.
+    #
+    # TRIED filter_heading_source: 0 (disable magnetometer entirely) on
+    # 2026-08-19, based on imu_deep_log.py CSVs showing real magnetometer
+    # disturbance (magnitude range comparable to Earth's field itself)
+    # isolated to the orientation channel (raw vs AHRS-fused vyaw tracked
+    # within 1.00x -- vyaw itself is not corrupted, so the earlier "AHRS
+    # fusion blends disturbance into vyaw" hypothesis is refuted). Assumed
+    # 0 would degrade gracefully to pure gyro integration; it did not --
+    # on real hardware, yaw stopped updating entirely on a U-turn (rover
+    # kept treating "forward" as the same world-frame direction regardless
+    # of actual heading). Likely cause: this AHRS's internal Kalman filter
+    # probably can't establish/hold a yaw state at all without some
+    # absolute reference (yaw isn't observable from gyro+accel alone), so
+    # heading_source:0 doesn't mean "clean open-loop integration" the way
+    # it does on some other AHRS firmware -- it more likely means "yaw
+    # never gets initialized/updated." This is strictly worse than the
+    # EMI-driven drift it was meant to fix. Do not retry 0 without first
+    # confirming (e.g. via MicroStrain's own docs/support) what heading
+    # source 0 actually does on this specific GX5-AHRS firmware.
     filter_heading_source: 1
 
     # Fused yaw was observed drifting specifically while the rover drives

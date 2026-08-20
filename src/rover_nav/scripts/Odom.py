@@ -11,7 +11,7 @@ from rclpy.node import Node
 from std_msgs.msg import String
 
 # Constants
-WHEEL_CIRCUMFERENCE = 0.697  # meters
+WHEEL_CIRCUMFERENCE = 0.667442  # meters (calibrated)
 WHEELBASE = 0.566  # meters
 PUBLISH_RATE = 20  # Hz
 
