@@ -154,3 +154,21 @@ of edited in the file, e.g. `python3 generate_occupancy_grid.py --slope-thresh 3
 
 Restart `nav2_planning.launch.py` after regenerating (`map_server` loads
 the PGM/YAML once at startup, it won't pick up a change live).
+
+---
+
+## Additional: obstacle detection (RealSense camera)
+
+```bash
+cd ~/jazzy_ws
+source /opt/ros/jazzy/setup.bash && source install/setup.bash
+ros2 launch rover_nav obstacle_detection.launch.py
+```
+
+Brings up the full RealSense-based obstacle detection pipeline:
+1. Launches the RealSense camera driver (`realsense2_camera`) with the depth+RGB pointcloud enabled at 1280x720@30fps.
+2. Crops the pointcloud to 0.1–2.0m on the Z axis (front-facing range of interest) with a `pcl_ros` PassThrough filter.
+3. Denoises the cropped cloud with a Statistical Outlier Removal filter.
+4. Runs the `obstacle_detector` node, which voxel-downsamples the cloud, removes the ground plane via RANSAC, clusters the remaining points with DBSCAN, and discards clusters that are too small or too high. It publishes:
+   - `/obstacles/markers` — bounding-box markers per detected obstacle (viewable in RViz)
+   - `/obstacle_detected` — a `Bool` flag, true if any obstacle is currently detected
