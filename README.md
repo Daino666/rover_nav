@@ -157,6 +157,64 @@ the PGM/YAML once at startup, it won't pick up a change live).
 
 ---
 
+## Additional: real-world global-planner test paths
+
+The nav2 global planner above was tuned and validated in simulation.
+`rover_nav/scripts/test_paths/generate_test_paths.py` generates five
+reference paths for repeating that validation on the physical rover, sized
+to the same rover model used in simulation (`Mars-rover/rover_description`,
+~0.8m x 0.8m footprint, ~0.71m track width).
+
+```bash
+cd ~/jazzy_ws/src/rover_nav/scripts/test_paths
+python3 generate_test_paths.py
+```
+
+Output goes to `rover_nav/scripts/test_paths/output/`:
+
+| File | Contents |
+|---|---|
+| `<name>.csv` | Full-resolution waypoints (`x_m, y_m, yaw_rad`, 0.1m apart) — drive these directly, e.g. as the `path` list in `rover_nav/scripts/rover_controller_pure_pursuit.py`, or convert rows to `PoseStamped`s for nav2 |
+| `<name>_markers.csv` | Sparse points (~2m apart along the path, `marker_id, x_m, y_m, yaw_rad`) — pace these out with cones/stakes/GPS to check the rover actually passes through them |
+| `<name>.jpg` | Plotted path with the same markers numbered, so you can match a cone in the field to a row in the markers CSV |
+| `overview.jpg` | All five paths on one sheet, for a quick side-by-side glimpse of scale |
+
+All coordinates are in a **rover-start-relative frame**: origin (0, 0) is the
+rover's launch point, +x is its initial heading (yaw = 0), +y is to its
+left. Mark that origin and heading on the ground first, then everything
+else is relative to it.
+
+**Path sizes** (real-world footprint, so you can picture each one before driving it):
+
+| Path | What it tests | Real-world size |
+|---|---|---|
+| `straight_line` | Straight-line tracking | 12m long |
+| `lane_change` | Straight, then a lane change, then straight | 3.2m straight → 4.8m lane-change maneuver (1.6m lateral shift) → 3.2m straight (11.2m total). The maneuvering region is shaded/labeled on the JPEG: x = 3.2–8.0m |
+| `circle` | Constant-curvature tracking | 5.0m radius loop (~10m diameter, ~31m circumference) |
+| `circle_transition` | Curvature-step handling | One loop of a 3.0m-radius circle tangent into one loop of a 6.0m-radius circle, both touching at the same point/heading (marked on the JPEG) — ~12m x 12m overall footprint |
+| `infinity` | Figure-8 / direction-reversal tracking | Lemniscate with 5.0m half-width lobes, ~8m x 8m overall footprint, self-crossing marked at the origin |
+
+Re-run the script after editing the `CONFIG` block near the top of the file
+to rescale — every dimension is expressed as a multiple of the rover's own
+footprint/turning radius, so the whole course scales together.
+
+**Marking the paths on the ground:**
+1. Pick a launch point and heading in the field; that's local (0, 0), yaw = 0.
+2. For each path you're testing, open `<name>_markers.csv` and place a
+   cone/stake at each `(x_m, y_m)` — x measured forward along the launch
+   heading, y measured to its left.
+3. Cross-check placement against `<name>.jpg`: marker numbers on the plot
+   match `marker_id` in the CSV.
+4. Drive the rover through nav2 (or the CSV path directly) and watch
+   whether it passes close to each marker in order — that's the pass/fail
+   signal for the real-world test.
+
+Note: on `circle_transition`, several markers sit right on top of each
+other near the shared tangent point (where both loops touch) — use the CSV
+for exact coordinates there rather than the JPEG labels.
+
+---
+
 ## Additional: obstacle detection (RealSense camera)
 
 ```bash

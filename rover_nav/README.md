@@ -19,7 +19,8 @@ rover_nav/
 │   ├── Rover_control_Joy.py             # Joystick teleop control node
 │   ├── Odom.py                          # Odometry node
 │   ├── rover_controller_pure_pursuit.py # Pure-pursuit path controller
-│   └── setup_can_sudo.sh                # One-time passwordless CAN sudoers setup
+│   ├── setup_can_sudo.sh                # One-time passwordless CAN sudoers setup
+│   └── test_paths/                      # Real-world global-planner test path generator
 └── package.xml
 ```
 
@@ -29,4 +30,10 @@ rover_nav/
 
 - ODrive ROS 2 driver
 - `rover_bringup` — provides `joystick_config.yaml` read by `Rover_control_Joy.py`
+
+---
+
+> **Real-world global-planner test paths** (straight line, lane change, circle, circle-to-circle
+> transition, figure-8) are documented in the top-level
+> [`README.md`](../README.md#additional-real-world-global-planner-test-paths).
 
