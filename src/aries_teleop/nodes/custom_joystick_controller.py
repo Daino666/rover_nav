@@ -50,10 +50,10 @@ class RoverJoystickController(Node):
         self.declare_parameter("reinit_hold_sec", 1.0)
 
         self.declare_parameter("num_axes", 6)
-        # Defaults match the post-reassembly CAN node id -> wheel mapping in
-        # aries_drive/config/cmd_vel_odrive_bridge.yaml.
-        self.declare_parameter("right_wheels", [0, 4, 3])
-        self.declare_parameter("left_wheels", [5, 1, 2])
+        # Defaults match the CAN node id -> wheel mapping in
+        # aries_drive/config/cmd_vel_odrive_bridge.yaml, re-verified 2026-08-23.
+        self.declare_parameter("right_wheels", [3, 4, 5])
+        self.declare_parameter("left_wheels", [0, 1, 2])
         self.declare_parameter("sound_file", "")
 
         joy_topic = str(self.get_parameter("joy_topic").value)

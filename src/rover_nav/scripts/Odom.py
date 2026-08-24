@@ -66,16 +66,16 @@ class OdometryNode(Node):
             float(self.get_parameter("slip_covariance_multiplier").value),
         )
         
-        # Which CAN node id drives which side, front -> rear. These were block
-        # allocated ([0,1,2] right, [3,4,5] left) until the chassis was
-        # reassembled on 2026-08-12 and the node ids stopped following the
-        # sides. Keep them equal to the identically named parameters in
+        # Which CAN node id drives which side, front -> rear. Interleaved
+        # ([0,4,3] right, [5,1,2] left) from the 2026-08-12 reassembly until
+        # the node ids were reassigned on 2026-08-23 back to contiguous
+        # blocks. Keep them equal to the identically named parameters in
         # aries_drive/config/cmd_vel_odrive_bridge.yaml: if commanding and
         # odometry disagree about which side an axis is on, the rover still
         # drives correctly while reporting a mirrored twist, which the EKF then
         # fuses as real motion.
-        self.declare_parameter("right_wheels", [0, 4, 3])
-        self.declare_parameter("left_wheels", [5, 1, 2])
+        self.declare_parameter("right_wheels", [3, 4, 5])
+        self.declare_parameter("left_wheels", [0, 1, 2])
         self.right_wheels = [int(a) for a in self.get_parameter("right_wheels").value]
         self.left_wheels = [int(a) for a in self.get_parameter("left_wheels").value]
 

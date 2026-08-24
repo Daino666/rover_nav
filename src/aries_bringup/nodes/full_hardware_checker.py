@@ -57,16 +57,16 @@ AXIS_STATE_NAMES = {
 }
 CLOSED_LOOP = 8
 
-# CAN node id -> physical wheel, identified by arming one axis at a time after
-# the 2026-08-12 chassis reassembly. Keep in step with right_wheels/left_wheels
-# in aries_drive/config/cmd_vel_odrive_bridge.yaml.
+# CAN node id -> physical wheel, re-verified 2026-08-23 by arming one axis at
+# a time and watching which physical wheel moved. Keep in step with
+# right_wheels/left_wheels in aries_drive/config/cmd_vel_odrive_bridge.yaml.
 AXIS_LABELS = {
-    0: "Right-Front",
-    1: "Left-Mid   ",
-    2: "Left-Rear  ",
-    3: "Right-Rear ",
-    4: "Right-Mid  ",
-    5: "Left-Front ",
+    0: "Front-Left  ",
+    1: "Middle-Left ",
+    2: "Back-Left   ",
+    3: "Back-Right  ",
+    4: "Middle-Right",
+    5: "Front-Right ",
 }
 NUM_AXES = 6
 
@@ -651,7 +651,7 @@ class FullHardwareChecker(Node):
                     flush=True,
                 )
 
-        print(f"\n{B}  ODrive Axes  (right: 0-2 | left: 3-5):{RST}", flush=True)
+        print(f"\n{B}  ODrive Axes  (right: 3-5 | left: 0-2):{RST}", flush=True)
 
         for i in range(NUM_AXES):
             label = AXIS_LABELS[i]

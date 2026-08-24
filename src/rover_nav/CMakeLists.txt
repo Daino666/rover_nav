@@ -27,6 +27,7 @@ install(
     scripts/imu_noise_check.py
     scripts/yaw_source_compare.py
     scripts/imu_deep_log.py
+    scripts/odrive_fault_log.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
