@@ -49,6 +49,55 @@ Visualization Manager:
       Plane Cell Count: 10
       Reference Frame: <Fixed Frame>
       Value: true
+    - Class: rviz_default_plugins/Map
+      Enabled: true
+      Name: Map
+      Topic:
+        Depth: 5
+        Durability Policy: Transient Local
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /map
+      Value: true
+    - Class: rviz_default_plugins/Path
+      Color: 25; 25; 25
+      Enabled: true
+      Line Style: Lines
+      Line Width: 0.03
+      Name: Raw Plan (SmacPlanner2D)
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /unsmoothed_plan
+      Value: true
+    - Class: rviz_default_plugins/Path
+      Color: 0; 255; 0
+      Enabled: true
+      Line Style: Lines
+      Line Width: 0.08
+      Name: Smoothed Plan (SimpleSmoother)
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /plan_smoothed
+      Value: true
+    - Class: rviz_default_plugins/Path
+      Color: 255; 128; 0
+      Enabled: true
+      Line Style: Lines
+      Line Width: 0.1
+      Name: Pure Pursuit Path (followed route)
+      Topic:
+        Depth: 5
+        Durability Policy: Transient Local
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /pure_pursuit/path
+      Value: true
     - Class: rviz_default_plugins/MarkerArray
       Enabled: true
       Name: GripperArc

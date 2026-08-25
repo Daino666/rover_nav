@@ -48,7 +48,14 @@ def generate_launch_description():
     rviz_config = PathJoinSubstitution([
         FindPackageShare('rover_nav'), 'rviz', 'nav2_path_view.rviz'
     ])
+    default_map_file = PathJoinSubstitution([
+        FindPackageShare('rover_nav'), 'maps', 'marsyard2026_occupancy.yaml'
+    ])
 
+    map_arg = DeclareLaunchArgument(
+        'map', default_value=default_map_file,
+        description='Full path to the occupancy map yaml file',
+    )
     rviz_arg = DeclareLaunchArgument(
         'rviz', default_value='false',
         description='Also launch RViz pre-configured to show the map + planned paths live',
@@ -64,7 +71,7 @@ def generate_launch_description():
         executable='map_server',
         name='map_server',
         output='screen',
-        parameters=[params_file],
+        parameters=[params_file, {'yaml_filename': LaunchConfiguration('map')}],
     )
 
     planner_server_node = Node(
@@ -115,6 +122,7 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
+        map_arg,
         rviz_arg,
         static_tf_arg,
         static_tf_node,

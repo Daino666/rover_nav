@@ -1,7 +1,8 @@
 map_server:
   ros__parameters:
     use_sim_time: false
-    yaml_filename: "/home/hsm/jazzy_ws/src/marsyard/marsyard2026_occupancy.yaml"
+    # yaml_filename is overridden at launch time by the 'map' argument.
+    yaml_filename: "marsyard2026_occupancy.yaml"
     topic_name: "map"
     frame_id: "map"
 
@@ -12,6 +13,16 @@ global_costmap:
       global_frame: map
       robot_base_frame: base_footprint
       resolution: 0.1
+      # Real chassis footprint (base_footprint frame, X forward/Y left), read
+      # directly from aries/meshes/base_link_v3.stl's bounding box -- nothing
+      # was set before, so nav2_costmap_2d silently defaulted to a 0.1 m
+      # circular robot_radius (the actual rover is ~0.71 m wide, ~0.90 m
+      # long, and the rear overhangs the base_link origin much further than
+      # the front: X -0.635..+0.261 m, Y -0.330..+0.380 m). This is also what
+      # was behind SmacPlanner2D's "HIGHLY recommended to set the inflation
+      # radius to be at MINIMUM half of the robot's largest cross-section"
+      # warning -- it had no real footprint to judge that against.
+      footprint: "[[0.261, 0.380], [0.261, -0.330], [-0.635, -0.330], [-0.635, 0.380]]"
       track_unknown_space: false
       always_send_full_costmap: true
       rolling_window: false
@@ -30,11 +41,16 @@ global_costmap:
         # cost_scaling_factor controls how sharply cost decays away from an
         # obstacle -- lower = cost stays elevated further out, pulling the
         # planner's chosen path further toward the centerline of open space.
-        cost_scaling_factor: 3.0
+        # cost = 252 * exp(-cost_scaling_factor * distance), so
+        # cost_scaling_factor * inflation_radius sets how much the cost has
+        # decayed by the radius's edge -- kept at the original 3.0 * 1.0
+        # product (was 3.0 when inflation_radius was 1.0) so shrinking the
+        # radius doesn't also flatten the decay curve: 3.0 * (1.0/0.56).
+        cost_scaling_factor: 5.36
         # How far (m) the inflation cost gradient extends past each obstacle.
         # Matches the scale of the corridors in this yard; tune if paths
         # still look too close to obstacles.
-        inflation_radius: 1.0
+        inflation_radius: 0.56
 
 planner_server:
   ros__parameters:

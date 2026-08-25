@@ -1,0 +1,174 @@
+# Local-planner half of the full Nav2 navigation stack -- controller_server,
+# local_costmap, behavior_server, bt_navigator -- kept separate from
+# nav2_planning_params.yaml (map_server/global_costmap/planner_server/
+# smoother_server), which nav2_planning_sim.launch.py / _real already own and
+# which this stack reuses unchanged. See nav2_navigation_sim.launch.py.
+#
+# robot_base_frame/global_frame and cost_scaling_factor/inflation_radius are
+# kept in sync with global_costmap's values in nav2_planning_params.yaml.
+
+local_costmap:
+  local_costmap:
+    ros__parameters:
+      use_sim_time: true
+      global_frame: odom
+      robot_base_frame: base_footprint
+      rolling_window: true
+      width: 6
+      height: 6
+      resolution: 0.1
+      # Same real footprint as global_costmap (nav2_planning_params.yaml) --
+      # read from aries/meshes/base_link_v3.stl's bounding box. Each costmap
+      # instance needs its own copy of this parameter; it was missing here
+      # too (silently defaulting to a 0.1 m circular robot_radius).
+      footprint: "[[0.261, 0.380], [0.261, -0.330], [-0.635, -0.330], [-0.635, 0.380]]"
+      update_frequency: 5.0
+      publish_frequency: 5.0
+      always_send_full_costmap: true
+      plugins: ["obstacle_layer", "inflation_layer"]
+      # Camera-based obstacle avoidance: depth_to_pointcloud.py synthesizes
+      # /camera/depth/points from the sim's depth image (no native points
+      # topic bridged), obstacle_detection_sim.launch.py's PassThrough + SOR
+      # chain range-crops and denoises it into /pcl/denoised, which this
+      # layer marks/clears from. min/max_obstacle_height are real-world
+      # (post-TF) heights -- separate from PassThrough's camera-frame Z crop,
+      # which limits detection *range*, not height.
+      obstacle_layer:
+        plugin: "nav2_costmap_2d::ObstacleLayer"
+        enabled: true
+        observation_sources: "pointcloud"
+        pointcloud:
+          topic: /pcl/denoised
+          data_type: "PointCloud2"
+          sensor_frame: camera_depth_optical_frame
+          # Camera is mounted level (rpy 0 0 0) at 0.46 m above ground
+          # (base_link_height 0.206 m + camera_z 0.2535 m, d435i.xacro/
+          # common_properties.xacro) with a ~55 deg vertical FOV (640x480,
+          # 69.4 deg horizontal). At the 2.0 m PassThrough range limit the
+          # view frustum's top edge sits at ~1.5 m -- that bounds what this
+          # sensor can actually see, so raising max_obstacle_height further
+          # would just accept noise, not real detections.
+          min_obstacle_height: 0.05
+          max_obstacle_height: 1.5
+          obstacle_range: 2.5
+          raytrace_range: 3.0
+          marking: true
+          clearing: true
+      inflation_layer:
+        plugin: "nav2_costmap_2d::InflationLayer"
+        # Kept in sync with global_costmap's inflation_layer
+        # (nav2_planning_params.yaml) -- see that file for the
+        # cost_scaling_factor * inflation_radius derivation.
+        cost_scaling_factor: 5.36
+        inflation_radius: 0.56
+
+controller_server:
+  ros__parameters:
+    use_sim_time: true
+    controller_frequency: 10.0
+    min_x_velocity_threshold: 0.01
+    min_y_velocity_threshold: 0.5
+    min_theta_velocity_threshold: 0.01
+    failure_tolerance: 0.3
+    progress_checker_plugins: ["progress_checker"]
+    goal_checker_plugins: ["goal_checker"]
+    controller_plugins: ["FollowPath"]
+
+    progress_checker:
+      plugin: "nav2_controller::SimpleProgressChecker"
+      required_movement_radius: 0.5
+      movement_time_allowance: 10.0
+
+    goal_checker:
+      plugin: "nav2_controller::SimpleGoalChecker"
+      xy_goal_tolerance: 0.5
+      yaw_goal_tolerance: 0.25
+      stateful: true
+
+    # RegulatedPurePursuit: rover already uses pure pursuit for its
+    # hardcoded-waypoint driver (rover_controller_pure_pursuit.py) -- same
+    # family of controller, this time consuming planner_server's plan instead
+    # of WAYPOINTS. desired_linear_vel derived from that script's REAL
+    # binding constraint: MAX_WHEEL_VEL = 1.0 rev/s clipped at the motor
+    # command stage (odrive input_vel, turns/s), not its MAX_VELOCITY=1.5
+    # (an unclamped joystick-request ceiling that never actually reaches the
+    # wheels). 1.0 rev/s * wheel circumference (2*pi*0.111 m) = ~0.70 m/s
+    # hard cap -- 0.5 m/s leaves headroom for cornering/regulation overshoot
+    # while using real capability better than the previous 0.4.
+    FollowPath:
+      plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
+      desired_linear_vel: 0.5
+      max_linear_accel: 1.5
+      max_linear_decel: 1.5
+      lookahead_dist: 0.6
+      min_lookahead_dist: 0.3
+      max_lookahead_dist: 1.2
+      lookahead_time: 1.5
+      use_velocity_scaled_lookahead_dist: true
+      min_approach_linear_velocity: 0.05
+      approach_velocity_scaling_dist: 1.0
+      max_allowed_time_to_collision_up_to_carrot: 1.0
+      use_regulated_linear_velocity_scaling: true
+      use_cost_regulated_linear_velocity_scaling: true
+      regulated_linear_scaling_min_radius: 0.9
+      regulated_linear_scaling_min_speed: 0.15
+      # false -- observed empirically: with this true, the controller got stuck
+      # perpetually re-triggering rotate-in-place (linear.x pinned at 0.0,
+      # angular.z jittering in a noisy +-0.2 rad/s band that never settled)
+      # instead of ever committing to drive. Each replan cycle nudges the
+      # target heading slightly, and the rotate-then-drive state machine never
+      # converges. Skid-steer can turn while driving, so it doesn't need the
+      # strict two-phase behavior -- Pure Pursuit blends linear+angular itself.
+      use_rotate_to_heading: false
+      rotate_to_heading_min_angle: 0.785
+      max_angular_accel: 2.0
+      max_robot_pose_search_dist: 5.0
+      # Skid-steer rover -- no minimum turning radius constraint.
+      min_turning_radius: 0.0
+
+behavior_server:
+  ros__parameters:
+    use_sim_time: true
+    local_costmap_topic: local_costmap/costmap_raw
+    global_costmap_topic: global_costmap/costmap_raw
+    local_footprint_topic: local_costmap/published_footprint
+    global_footprint_topic: global_costmap/published_footprint
+    cycle_frequency: 10.0
+    behavior_plugins: ["spin", "backup", "wait"]
+    spin:
+      plugin: "nav2_behaviors::Spin"
+    backup:
+      plugin: "nav2_behaviors::BackUp"
+    wait:
+      plugin: "nav2_behaviors::Wait"
+    global_frame: odom
+    robot_base_frame: base_footprint
+    simulate_ahead_time: 2.0
+    max_rotational_vel: 0.5
+    min_rotational_vel: 0.1
+    rotational_acc_lim: 2.0
+
+bt_navigator:
+  ros__parameters:
+    use_sim_time: true
+    global_frame: map
+    robot_base_frame: base_footprint
+    odom_topic: /odometry/filtered
+    # lifecycle_manager_planning (map_server/planner_server/smoother_server)
+    # and lifecycle_manager_navigation (controller_server/behavior_server/
+    # bt_navigator) both autostart independently with no ordering between
+    # them -- bt_navigator's BT can activate and start loading its XML
+    # (which immediately probes planner_server's compute_path_to_pose action
+    # server) before planner_server has finished activating. The default 1s
+    # wait is too tight for that race; give it real headroom instead of
+    # coupling the two lifecycle managers together.
+    default_server_timeout: 10
+    # Left unset -- bt_navigator falls back to its own packaged default
+    # (navigate_to_pose_w_replanning_and_recovery.xml / the through-poses
+    # equivalent), which is exactly what this stack needs.
+
+lifecycle_manager_navigation:
+  ros__parameters:
+    use_sim_time: true
+    autostart: true
+    node_names: ["controller_server", "behavior_server", "bt_navigator"]

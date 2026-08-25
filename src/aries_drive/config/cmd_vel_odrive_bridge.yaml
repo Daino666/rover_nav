@@ -13,8 +13,8 @@ cmd_vel_odrive_bridge:
     #   3 Right-Rear    4 Right-Mid   5 Left-Front
     # Listed front -> rear. rover_nav/Odom.py takes the same two parameters and
     # must be given the same values, or odometry reads the sides backwards.
-    right_wheels: [0, 4, 3]
-    left_wheels: [5, 1, 2]
+    right_wheels: [5, 4, 3]
+    left_wheels: [0, 1, 2]
 
     # Must stay consistent with rover_nav/Odom.py.
     wheel_circumference_m: 0.697

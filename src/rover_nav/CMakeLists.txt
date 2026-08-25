@@ -23,10 +23,13 @@ install(
     scripts/cmd_vel_arbiter.py
     scripts/check_heading.py
     scripts/map_odom_broadcaster.py
+    scripts/odom_tf_broadcaster.py
     scripts/imu_yaw_zero.py
     scripts/imu_noise_check.py
     scripts/yaw_source_compare.py
     scripts/imu_deep_log.py
+    scripts/send_waypoints.py
+    scripts/depth_to_pointcloud.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
@@ -43,6 +46,11 @@ install(DIRECTORY
 
 install(DIRECTORY
   rviz
+  DESTINATION share/${PROJECT_NAME}/
+)
+
+install(DIRECTORY
+  maps
   DESTINATION share/${PROJECT_NAME}/
 )
 

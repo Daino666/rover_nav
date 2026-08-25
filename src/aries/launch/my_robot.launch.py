@@ -103,6 +103,17 @@ def generate_launch_description():
         description='Start the shared joystick driver and arm/gripper teleop'
     )
 
+    use_moveit_arg = DeclareLaunchArgument(
+        'use_moveit',
+        default_value='true',
+        description=(
+            'Bring up MoveIt move_group for the arm/gripper (planning, its own RViz, '
+            'joystick arm teleop). Set false for rover-only sims (e.g. Nav2 testing) '
+            'that have no use for arm control -- ros_controllers_launch still spawns '
+            'joint_state_broadcaster so the arm/gripper stay valid (idle) in TF.'
+        )
+    )
+
     use_rover_joystick_arg = DeclareLaunchArgument(
         'use_rover_joystick',
         default_value='true',
@@ -362,6 +373,7 @@ def generate_launch_description():
                 [FindPackageShare('aries_moveit'), 'launch', 'move_group.launch.py']
             )
         ),
+        condition=IfCondition(LaunchConfiguration('use_moveit')),
         launch_arguments={
             'hardware_protocol': hardware_protocol,
             # Forwarded so MoveIt builds the SAME robot as Gazebo and
@@ -408,6 +420,7 @@ def generate_launch_description():
         use_sim_time_arg,
         headless_arg,
         use_joystick_arg,
+        use_moveit_arg,
         use_rover_joystick_arg,
         use_cmd_vel_relay_arg,
         use_sim_ekf_arg,

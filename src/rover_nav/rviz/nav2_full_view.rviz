@@ -1,0 +1,102 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Class: rviz_default_plugins/Grid
+      Name: Grid
+      Enabled: true
+    - Class: rviz_default_plugins/Map
+      Name: Map
+      Topic:
+        Value: /map
+        Durability Policy: Transient Local
+      Enabled: true
+    - Class: rviz_default_plugins/Map
+      Name: Global Costmap
+      Topic:
+        Value: /global_costmap/costmap
+        Durability Policy: Transient Local
+      Color Scheme: costmap
+      Enabled: false
+    - Class: rviz_default_plugins/Map
+      Name: Local Costmap
+      Topic:
+        Value: /local_costmap/costmap
+        Durability Policy: Transient Local
+      Color Scheme: costmap
+      Alpha: 0.7
+      Enabled: true
+    - Class: rviz_default_plugins/Path
+      Name: Global Plan
+      Topic:
+        Value: /plan
+      Color: 0; 255; 0
+      Line Style: Lines
+      Line Width: 0.06
+      Enabled: true
+    - Class: rviz_default_plugins/Path
+      Name: Local Plan
+      Topic:
+        Value: /local_plan
+      Color: 255; 0; 255
+      Line Style: Lines
+      Line Width: 0.03
+      Enabled: true
+    - Class: rviz_default_plugins/Path
+      Name: Raw Plan (SmacPlanner2D)
+      Topic:
+        Value: /unsmoothed_plan
+      Color: 25; 25; 25
+      Line Style: Lines
+      Line Width: 0.03
+      Enabled: false
+    - Class: rviz_default_plugins/PointCloud2
+      Name: Denoised Obstacle Cloud
+      Topic:
+        Value: /pcl/denoised
+        Reliability Policy: Reliable
+      Style: Flat Squares
+      Size (Pixels): 4
+      Color Transformer: AxisColor
+      Axis: Z
+      Enabled: true
+    - Class: rviz_default_plugins/Polygon
+      Name: Local Footprint
+      Topic:
+        Value: /local_costmap/published_footprint
+      Color: 25; 255; 0
+      Enabled: true
+    - Class: rviz_default_plugins/TF
+      Name: TF
+      Show Names: true
+      Show Axes: true
+      Show Arrows: false
+      Enabled: false
+    - Class: rviz_default_plugins/RobotModel
+      Name: RobotModel
+      Description Topic:
+        Value: /robot_description
+        Durability Policy: Transient Local
+      Enabled: true
+  Global Options:
+    Fixed Frame: map
+    Background Color: 255; 255; 255
+  Tools:
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+    - Class: rviz_default_plugins/SetInitialPose
+      Topic:
+        Value: /initialpose
+    - Class: rviz_default_plugins/SetGoal
+      Topic:
+        Value: /goal_pose
+  Value: true
+  Views:
+    Current:
+      Class: rviz_default_plugins/TopDownOrtho
+      Name: Current View
+      Scale: 25
+      X: 0
+      Y: 10
