@@ -37,7 +37,7 @@ MAX_CENTROID_Z    = 1.5    # (legacy, unused) superseded by MAX_RANGE
 #              0.4145 m; CORRIDOR_HALF_WIDTH adds clearance on top. Tested as an
 #              OVERLAP, not a centroid test, so a rock poking into the path from
 #              the side still counts.
-MAX_RANGE            = 2.5    # ignore clusters whose nearest point is beyond this (m)
+MAX_RANGE            = 2.0    # ignore clusters whose nearest point is beyond this (m)
 MIN_OBSTACLE_HEIGHT  = 0.14   # ignore clusters shorter than this above ground (m)
 CORRIDOR_HALF_WIDTH  = 0.50   # half-width of the rover's path (m); 0.4145 = bare rover
 CORRIDOR_ENABLED     = True   # False publishes everything in range, ignoring the corridor
@@ -175,6 +175,15 @@ class ObstacleDetector(Node):
         pts = pts[keep]
         heights = height[keep]   # height above ground, per surviving point
 
+        # Discard everything outside the rover's path before clustering. Doing
+        # this at the POINT level (not just per cluster) is what stops a rock at
+        # the edge of view, or a side wall, from being joined to something in
+        # the path by DBSCAN and dragged into one oversized box.
+        if self._p('corridor_enabled'):
+            inside = np.abs(pts[:, 0]) <= self._p('corridor_half_width')
+            pts = pts[inside]
+            heights = heights[inside]
+
         self._frames += 1
         if self._frames % self._log_every == 0:
             self.get_logger().info(
@@ -269,7 +278,11 @@ class ObstacleDetector(Node):
         m.action     = Marker.ADD
         m.scale.x    = 0.02
         m.color.r, m.color.g, m.color.b, m.color.a = 1.0, 0.3, 0.0, 1.0
-        m.lifetime   = Duration(sec=0, nanosec=300_000_000)
+        # 0 = persist until explicitly replaced or DELETEd, which _publish
+        # already does for stale ids. A finite lifetime flickers: the pipeline
+        # runs ~3 Hz (0.33 s), so the old 0.3 s timeout expired markers before
+        # the next frame arrived.
+        m.lifetime   = Duration(sec=0, nanosec=0)
         for a, b in edges:
             m.points.append(Point(x=corners[a][0], y=corners[a][1], z=corners[a][2]))
             m.points.append(Point(x=corners[b][0], y=corners[b][1], z=corners[b][2]))

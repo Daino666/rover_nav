@@ -43,7 +43,7 @@ def generate_launch_description():
             # Must exceed the node's max_range (2.5 m) or this crop, not the
             # node, becomes the real detection limit. Small headroom so a
             # cluster straddling 2.5 m still has its far side.
-            'filter_limit_max':  2.8,
+            'filter_limit_max':  2.3,
         }]
     )
 
