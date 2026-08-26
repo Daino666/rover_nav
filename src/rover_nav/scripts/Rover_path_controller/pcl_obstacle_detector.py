@@ -13,11 +13,12 @@ from builtin_interfaces.msg import Duration
 
 
 # ── tuneable ──────────────────────────────────────────────────────────────────
-VOXEL_SIZE        = 0.05   # downsample leaf size (m) — speeds up DBSCAN
+VOXEL_SIZE        = 0.03   # downsample leaf size (m) — smaller keeps more points
+                           # per object so short rocks clear MIN_CLUSTER_PTS
 PLANE_DIST_THRESH = 0.05   # ground plane fit tolerance (m)
 DBSCAN_EPS        = 0.80   # cluster neighbourhood radius (m)
 DBSCAN_MIN_PTS    = 5     # min points to form a cluster
-MIN_CLUSTER_PTS   = 30     # discard clusters smaller than this after downsampling
+MIN_CLUSTER_PTS   = 15     # discard clusters smaller than this after downsampling
 MAX_CENTROID_Z    = 1.5    # discard clusters whose centroid Z exceeds this (m)
 
 # Ground removal. The cloud is in camera_depth_optical_frame: +X right,
@@ -26,7 +27,10 @@ MAX_CENTROID_Z    = 1.5    # discard clusters whose centroid Z exceeds this (m)
 # simply (CAMERA_HEIGHT - y). These are ROS parameters so they can be tuned
 # live with `ros2 param set /obstacle_detector <name> <value>`.
 CAMERA_HEIGHT     = 0.43   # optical centre above ground (m), measured on the rover
-GROUND_MARGIN     = 0.08   # keep points this far above the ground surface (m)
+GROUND_MARGIN     = 0.04   # keep points this far above the ground surface (m).
+                           # 0.08 hid anything under ~20 cm; 0.04 drops the
+                           # detection floor to ~10 cm at the cost of needing
+                           # CAMERA_HEIGHT accurate to a couple of cm.
 GROUND_BAND       = 0.15   # points below this height are candidates for the plane fit (m)
 MAX_HEIGHT        = 2.00   # ignore anything higher than this above ground (m)
 FIT_GROUND_PLANE  = True   # fit the ground within the band instead of assuming it flat
@@ -50,8 +54,16 @@ class ObstacleDetector(Node):
             ('max_height', MAX_HEIGHT),
             ('plane_dist_thresh', PLANE_DIST_THRESH),
             ('normal_tol_deg', NORMAL_TOL_DEG),
+            ('voxel_size', VOXEL_SIZE),
+            ('dbscan_eps', DBSCAN_EPS),
+            ('max_centroid_z', MAX_CENTROID_Z),
         ):
             self.declare_parameter(name, float(default))
+        for name, default in (
+            ('min_cluster_pts', MIN_CLUSTER_PTS),
+            ('dbscan_min_pts', DBSCAN_MIN_PTS),
+        ):
+            self.declare_parameter(name, int(default))
         self.declare_parameter('fit_ground_plane', FIT_GROUND_PLANE)
 
         self._log_every = 30
@@ -113,7 +125,7 @@ class ObstacleDetector(Node):
         # 1. Voxel downsample
         pcd = o3d.geometry.PointCloud()
         pcd.points = o3d.utility.Vector3dVector(xyz)
-        pcd = pcd.voxel_down_sample(VOXEL_SIZE)
+        pcd = pcd.voxel_down_sample(self._p('voxel_size'))
         if len(pcd.points) < 3:
             return []
         pts = np.asarray(pcd.points)
@@ -148,7 +160,9 @@ class ObstacleDetector(Node):
             return []
 
         # 3. DBSCAN clustering
-        labels = DBSCAN(eps=DBSCAN_EPS, min_samples=DBSCAN_MIN_PTS, n_jobs=-1).fit_predict(pts)
+        labels = DBSCAN(eps=self._p('dbscan_eps'),
+                        min_samples=self._p('dbscan_min_pts'),
+                        n_jobs=-1).fit_predict(pts)
 
         # 4. Filter clusters
         clusters = []
@@ -156,9 +170,9 @@ class ObstacleDetector(Node):
             if lbl == -1:
                 continue
             c = pts[labels == lbl]
-            if len(c) < MIN_CLUSTER_PTS:
+            if len(c) < self._p('min_cluster_pts'):
                 continue
-            if c[:, 2].mean() > MAX_CENTROID_Z:
+            if c[:, 2].mean() > self._p('max_centroid_z'):
                 continue
             clusters.append(c)
 
