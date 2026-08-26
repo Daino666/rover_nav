@@ -19,28 +19,12 @@ PLANE_DIST_THRESH = 0.05   # ground plane fit tolerance (m)
 DBSCAN_EPS        = 0.80   # cluster neighbourhood radius (m)
 DBSCAN_MIN_PTS    = 5     # min points to form a cluster
 MIN_CLUSTER_PTS   = 15     # discard clusters smaller than this after downsampling
-MAX_CENTROID_Z    = 1.5    # (legacy, unused) superseded by MAX_RANGE
-
-# ── local-planner gating ──────────────────────────────────────────────────────
-# This node feeds the local planner, so only obstacles the rover could actually
-# hit are worth publishing. Three gates, all applied per cluster:
-#
-#   range   -- nearest point of the cluster, measured as optical Z (forward from
-#              the CAMERA). The camera sits 0.2756 m ahead of base_link, so a
-#              cluster at MAX_RANGE is ~2.78 m from the rover centre.
-#   height  -- tallest point above the ground surface. Anything shorter is
-#              driveable, not an obstacle. Note this is the cluster TOP, while
-#              GROUND_MARGIN stays low so the object's base is still captured
-#              and its true height can be measured.
-#   corridor-- lateral overlap with the swept path straight ahead. Rover is
-#              0.759 m track + 0.070 m wheel = 0.829 m wide, so half-width is
-#              0.4145 m; CORRIDOR_HALF_WIDTH adds clearance on top. Tested as an
-#              OVERLAP, not a centroid test, so a rock poking into the path from
-#              the side still counts.
-MAX_RANGE            = 2.0    # ignore clusters whose nearest point is beyond this (m)
-MIN_OBSTACLE_HEIGHT  = 0.14   # ignore clusters shorter than this above ground (m)
-CORRIDOR_HALF_WIDTH  = 0.50   # half-width of the rover's path (m); 0.4145 = bare rover
-CORRIDOR_ENABLED     = True   # False publishes everything in range, ignoring the corridor
+MAX_CENTROID_Z    = 1.5    # discard clusters whose centroid Z exceeds this (m)
+# Ignore anything shorter than this. Measured as the cluster's TALLEST point
+# above the ground surface -- GROUND_MARGIN stays low so the object's base is
+# still captured and its true height can be measured. Raising GROUND_MARGIN to
+# 0.15 instead would lop the bottom off every object and under-report heights.
+MIN_OBSTACLE_HEIGHT = 0.15  # discard clusters shorter than this (m)
 
 # Ground removal. The cloud is in camera_depth_optical_frame: +X right,
 # +Y DOWN, +Z forward. The URDF mounts the camera with rpy="0 0 0" relative
@@ -78,9 +62,7 @@ class ObstacleDetector(Node):
             ('voxel_size', VOXEL_SIZE),
             ('dbscan_eps', DBSCAN_EPS),
             ('max_centroid_z', MAX_CENTROID_Z),
-            ('max_range', MAX_RANGE),
             ('min_obstacle_height', MIN_OBSTACLE_HEIGHT),
-            ('corridor_half_width', CORRIDOR_HALF_WIDTH),
         ):
             self.declare_parameter(name, float(default))
         for name, default in (
@@ -89,7 +71,6 @@ class ObstacleDetector(Node):
         ):
             self.declare_parameter(name, int(default))
         self.declare_parameter('fit_ground_plane', FIT_GROUND_PLANE)
-        self.declare_parameter('corridor_enabled', CORRIDOR_ENABLED)
 
         self._log_every = 30
         self._frames = 0
@@ -175,15 +156,6 @@ class ObstacleDetector(Node):
         pts = pts[keep]
         heights = height[keep]   # height above ground, per surviving point
 
-        # Discard everything outside the rover's path before clustering. Doing
-        # this at the POINT level (not just per cluster) is what stops a rock at
-        # the edge of view, or a side wall, from being joined to something in
-        # the path by DBSCAN and dragged into one oversized box.
-        if self._p('corridor_enabled'):
-            inside = np.abs(pts[:, 0]) <= self._p('corridor_half_width')
-            pts = pts[inside]
-            heights = heights[inside]
-
         self._frames += 1
         if self._frames % self._log_every == 0:
             self.get_logger().info(
@@ -199,47 +171,32 @@ class ObstacleDetector(Node):
                         min_samples=self._p('dbscan_min_pts'),
                         n_jobs=-1).fit_predict(pts)
 
-        # 4. Keep only clusters the rover could actually hit.
-        half_w = self._p('corridor_half_width')
-        use_corridor = self._p('corridor_enabled')
-        max_range = self._p('max_range')
-        min_h = self._p('min_obstacle_height')
-
+        # 4. Filter clusters
         clusters = []
-        rejected = {'small': 0, 'far': 0, 'short': 0, 'aside': 0}
+        n_short = 0
         for lbl in set(labels):
             if lbl == -1:
                 continue
             sel = labels == lbl
             c = pts[sel]
             if len(c) < self._p('min_cluster_pts'):
-                rejected['small'] += 1
                 continue
-
-            # Nearest point, not the centroid: a wide obstacle whose centre is
-            # past the limit can still have an edge inside braking distance.
-            if c[:, 2].min() > max_range:
-                rejected['far'] += 1
+            if c[:, 2].mean() > self._p('max_centroid_z'):
                 continue
-
-            # Tallest point above the ground surface.
-            if heights[sel].max() < min_h:
-                rejected['short'] += 1
+            # voxel_down_sample averages each voxel, so the topmost voxel sits
+            # ~half a leaf below the object's real top. Add that back, otherwise
+            # a true 15 cm rock measures ~14.2 cm and is wrongly discarded --
+            # i.e. the parameter means ACTUAL object height, not measured height.
+            top = heights[sel].max() + 0.5 * self._p('voxel_size')
+            if top < self._p('min_obstacle_height'):
+                n_short += 1
                 continue
-
-            # Lateral overlap with the path, so something intruding from the
-            # side counts even though its centroid sits outside the corridor.
-            if use_corridor and (c[:, 0].min() > half_w or c[:, 0].max() < -half_w):
-                rejected['aside'] += 1
-                continue
-
             clusters.append(c)
 
-        if self._frames % self._log_every == 0 and any(rejected.values()):
+        if n_short and self._frames % self._log_every == 0:
             self.get_logger().info(
-                f"kept {len(clusters)} | rejected "
-                f"small={rejected['small']} far={rejected['far']} "
-                f"short={rejected['short']} off-path={rejected['aside']}"
+                f"dropped {n_short} cluster(s) shorter than "
+                f"{self._p('min_obstacle_height'):.2f} m"
             )
 
         return clusters
@@ -278,11 +235,7 @@ class ObstacleDetector(Node):
         m.action     = Marker.ADD
         m.scale.x    = 0.02
         m.color.r, m.color.g, m.color.b, m.color.a = 1.0, 0.3, 0.0, 1.0
-        # 0 = persist until explicitly replaced or DELETEd, which _publish
-        # already does for stale ids. A finite lifetime flickers: the pipeline
-        # runs ~3 Hz (0.33 s), so the old 0.3 s timeout expired markers before
-        # the next frame arrived.
-        m.lifetime   = Duration(sec=0, nanosec=0)
+        m.lifetime   = Duration(sec=0, nanosec=300_000_000)
         for a, b in edges:
             m.points.append(Point(x=corners[a][0], y=corners[a][1], z=corners[a][2]))
             m.points.append(Point(x=corners[b][0], y=corners[b][1], z=corners[b][2]))
