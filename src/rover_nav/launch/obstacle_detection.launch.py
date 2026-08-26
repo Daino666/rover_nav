@@ -19,6 +19,12 @@ def generate_launch_description():
             'pointcloud.enable':       'true',
             'depth_module.profile':    '1280x720x30',
             'rgb_camera.profile':      '1280x720x30',
+            # The aries URDF already carries every camera_* frame, and
+            # robot_state_publisher publishes them. Letting the driver publish
+            # its own copies puts two publishers on the same TF edges, which
+            # corrupts the tree for the nav/moveit stack as well as for these
+            # markers. Same reason aries_hardware.launch.py sets this false.
+            'publish_tf':              'false',
         }.items()
     )
 
