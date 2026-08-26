@@ -26,6 +26,19 @@ armed via /aries_drive/enable -- none of that is duplicated here.
     rover_controller_pure_pursuit.py (or two copies of this node) being run
     at the same time by mistake.
 
+Two things can be driven:
+  - the WAYPOINTS sequence in global_path_planner.py (default) -- stop-and-go,
+    map-frame, one Hermite leg per waypoint;
+  - one of the real-world test paths in scripts/test_paths/output/, selected
+    with the `test_path` parameter (e.g. test_path:=circle). Those are dense,
+    already-shaped courses in the rover's own start-relative frame, driven as
+    one continuous run with no per-waypoint stops -- the point of them is to
+    measure how well continuous curvature is tracked, which stopping every
+    couple of metres would hide. See test_path_loader.py for the frame, and
+    the "Real-world path-tracking tests" section of README.md for the field
+    procedure. Tracking error against the reference is reported live and
+    summarised at the end of the run.
+
 Motion is additionally gated on /aries_drive/enabled (the ODrive bridge's
 own arm state) and on run_started, which defaults to false and is set by
 calling /planner/start -- same safety posture as drive_auto_arm defaulting
@@ -41,6 +54,8 @@ import time
 
 sys.path.insert(0, os.path.dirname(__file__))
 from global_path_planner import distance, hermite_leg, GLOBAL_RESOLUTION, WAYPOINTS  # noqa: E402
+from test_path_loader import TEST_PATHS, anchor_path, load_markers, load_test_path, path_length  # noqa: E402
+import test_path_viz  # noqa: E402
 
 import rclpy
 import tf2_ros
@@ -48,9 +63,10 @@ from rclpy.duration import Duration as RclpyDuration
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from geometry_msgs.msg import Twist
-from nav_msgs.msg import Odometry
+from nav_msgs.msg import Odometry, Path
 from std_msgs.msg import Bool
 from std_srvs.srv import Trigger
+from visualization_msgs.msg import MarkerArray
 
 
 def quat_to_yaw(qx, qy, qz, qw):
@@ -102,6 +118,8 @@ class CmdVelArbiter(Node):
         self.declare_parameter("odom_timeout_s", 0.5)
         self.declare_parameter("control_rate_hz", 20.0)
         self.declare_parameter("stuck_timeout_s", 3.0)
+        self.declare_parameter("test_path", "")
+        self.declare_parameter("test_path_anchor", "start_pose")
 
         self.cmd_vel_topic = str(self.get_parameter("cmd_vel_topic").value)
         self.teleop_topic = str(self.get_parameter("teleop_topic").value)
@@ -118,6 +136,8 @@ class CmdVelArbiter(Node):
         self.odom_timeout_s = float(self.get_parameter("odom_timeout_s").value)
         control_rate = max(1.0, float(self.get_parameter("control_rate_hz").value))
         self.stuck_timeout_s = float(self.get_parameter("stuck_timeout_s").value)
+        self.test_path_name = str(self.get_parameter("test_path").value).strip()
+        self.test_path_anchor = str(self.get_parameter("test_path_anchor").value).strip()
 
         # ---- pose / drive state
         self.car_pos = None
@@ -148,6 +168,23 @@ class CmdVelArbiter(Node):
         self.halt_until = None
         self.current_target_idx = 0
 
+        # ---- test-path mode (see _load_test_path / _drive_test_path)
+        # self.test_path_points is the CSV as generated, in the path's own
+        # rover-start-relative frame; self.route is that same course placed
+        # into odom (identity, or re-anchored to the pose at run start), which
+        # is what actually gets driven. route is rebuilt on every
+        # /planner/start so a repeat run re-anchors to where the rover now is.
+        self.test_path_points = None
+        self.test_markers = None
+        self.route = None
+        self.route_idx = 0
+        self.run_finished = False
+        self.err_max = 0.0
+        self.err_sum = 0.0
+        self.err_count = 0
+        if self.test_path_name:
+            self._load_test_path()
+
         # ---- map -> odom lookup (see _try_load_waypoints)
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
@@ -165,6 +202,17 @@ class CmdVelArbiter(Node):
 
         self.pub = self.create_publisher(Twist, self.cmd_vel_topic, 10)
 
+        # Latched so RViz (rviz/global_path_view.rviz, already subscribed to
+        # both) picks the course up whenever it connects. Only used in
+        # test-path mode -- the waypoint route has publish_global_path.py.
+        self.route_pub = None
+        self.route_markers_pub = None
+        if self.test_path_name:
+            self.route_pub = self.create_publisher(
+                Path, test_path_viz.PATH_TOPIC, test_path_viz.latched_qos())
+            self.route_markers_pub = self.create_publisher(
+                MarkerArray, test_path_viz.MARKERS_TOPIC, test_path_viz.latched_qos())
+
         self.create_subscription(Odometry, self.odom_topic, self._on_odom, 10)
         self.create_subscription(Twist, self.teleop_topic, self._on_teleop, 10)
 
@@ -180,8 +228,13 @@ class CmdVelArbiter(Node):
 
         self.create_timer(1.0 / control_rate, self._control_loop)
 
+        if self.test_path_name:
+            what = (f"test path '{self.test_path_name}' ({len(self.test_path_points)} points, "
+                    f"{path_length(self.test_path_points):.1f} m, anchor={self.test_path_anchor})")
+        else:
+            what = f"{len(WAYPOINTS)} waypoint(s)"
         self.get_logger().info(
-            f"cmd_vel_arbiter ready: {len(WAYPOINTS)} waypoint(s) -> {self.cmd_vel_topic} | "
+            f"cmd_vel_arbiter ready: {what} -> {self.cmd_vel_topic} | "
             f"teleop override: {self.teleop_topic} | armed state: {self.drive_enabled_topic}"
         )
         if self.run_started:
@@ -220,6 +273,12 @@ class CmdVelArbiter(Node):
         self.current_wp_idx = 0
         self.leg_ready = False
         self.halt_until = None
+        # Dropping the route re-anchors the test path (and re-zeroes the
+        # tracking-error stats) on the next tick, so a second /planner/start
+        # drives the course from wherever the rover is now rather than
+        # replaying the first run's placement.
+        self.route = None
+        self.run_finished = False
         self.get_logger().info("run STARTED -- planning from the current pose")
         response.success = True
         response.message = "run started"
@@ -268,7 +327,7 @@ class CmdVelArbiter(Node):
         against). map->odom never changes during a run, so this only needs
         to succeed once -- cheap to retry every tick from _control_loop
         until it does."""
-        if self.waypoints is not None:
+        if self.waypoints is not None or self.test_path_name:
             return
         try:
             tfm = self.tf_buffer.lookup_transform(
@@ -299,6 +358,164 @@ class CmdVelArbiter(Node):
             f"leg to waypoint {self.current_wp_idx + 1}/{len(self.waypoints)}: {len(self.leg_path)} points"
         )
 
+    # ---------- test-path mode ----------
+
+    def _load_test_path(self):
+        """Read the selected course off disk once, at construction. A bad
+        name or a missing CSV is fatal here rather than a hold later: the
+        whole node was started to drive that specific course, and a rover
+        that comes up looking armed and ready but silently has no path is
+        exactly the failure mode the safety gating exists to avoid."""
+        if self.test_path_name not in TEST_PATHS:
+            raise SystemExit(
+                f"unknown test_path '{self.test_path_name}'. Known: {', '.join(TEST_PATHS)}"
+            )
+        if self.test_path_anchor not in ("start_pose", "odom_origin"):
+            raise SystemExit(
+                f"unknown test_path_anchor '{self.test_path_anchor}' -- "
+                "expected 'start_pose' or 'odom_origin'"
+            )
+        self.test_path_points = load_test_path(self.test_path_name)
+        self.test_markers = [(mid, x, y) for mid, x, y, _ in load_markers(self.test_path_name)]
+
+    def _ensure_route(self):
+        """Place the loaded course into odom, once per run.
+
+        anchor='start_pose' (default) rotates and translates it onto the
+        rover's live pose, so the CSV's (0, 0)/+x lands under the rover
+        wherever it currently sits -- which is what the field procedure
+        assumes (mark the origin, park the rover on it, start). Anchoring at
+        run start rather than at node start also means the follower doesn't
+        care that the rover was driven to the test site after localization
+        came up.
+
+        anchor='odom_origin' drives the CSV coordinates verbatim in odom --
+        correct only when the rover has not moved since localization started,
+        and useful mainly for replaying an exact previous run."""
+        if self.route is not None:
+            return
+        if self.car_pos is None or self.car_yaw is None:
+            return
+        if self.test_path_anchor == "start_pose":
+            self.route = anchor_path(self.test_path_points, self.car_pos, self.car_yaw)
+            markers = anchor_path(
+                [[x, y] for _, x, y in self.test_markers], self.car_pos, self.car_yaw)
+            marker_ids = [mid for mid, _, _ in self.test_markers]
+        else:
+            self.route = [list(p) for p in self.test_path_points]
+            markers = [[x, y] for _, x, y in self.test_markers]
+            marker_ids = [mid for mid, _, _ in self.test_markers]
+
+        self.route_idx = 0
+        self._last_seen_idx = None
+        self._stuck_since = None
+        self.err_max = 0.0
+        self.err_sum = 0.0
+        self.err_count = 0
+
+        stamp = self.get_clock().now().to_msg()
+        self.route_pub.publish(test_path_viz.path_msg(self.route, stamp, "odom"))
+        self.route_markers_pub.publish(
+            test_path_viz.marker_msgs(list(zip(marker_ids, [m[0] for m in markers],
+                                               [m[1] for m in markers])), stamp, "odom"))
+
+        self.get_logger().info(
+            f"test path '{self.test_path_name}' anchored at "
+            f"x={self.car_pos[0]:.2f} y={self.car_pos[1]:.2f} "
+            f"yaw={math.degrees(self.car_yaw):.1f}deg ({self.test_path_anchor}) -- "
+            f"{len(self.route)} points, {path_length(self.route):.1f} m, "
+            f"{len(markers)} ground marker(s). Published on "
+            f"{test_path_viz.PATH_TOPIC} + {test_path_viz.MARKERS_TOPIC}."
+        )
+
+    def _record_tracking_error(self):
+        """Distance from the rover to the nearest reference point in a window
+        around the index being chased -- the same cross-track miss the ground
+        markers are eyeballed for, but measured. Windowed rather than searched
+        globally so a self-crossing course (infinity, circle_transition) can't
+        score itself against the *other* pass through the same spot."""
+        lo = max(0, self.route_idx - 20)
+        hi = min(len(self.route), self.route_idx + 40)
+        err = min(distance(self.car_pos, self.route[i]) for i in range(lo, hi))
+        self.err_max = max(self.err_max, err)
+        self.err_sum += err
+        self.err_count += 1
+        return err
+
+    def _finish_run(self):
+        mean = self.err_sum / self.err_count if self.err_count else 0.0
+        self.run_finished = True
+        self.get_logger().info(
+            f"test path '{self.test_path_name}' COMPLETE -- tracking error vs reference: "
+            f"mean {mean:.3f} m, max {self.err_max:.3f} m over {self.err_count} samples. "
+            f"Compare against the {len(self.test_markers)} ground markers in "
+            f"{self.test_path_name}_markers.csv. Re-run with /planner/start."
+        )
+        self._publish(0.0, 0.0)
+
+    def _drive_test_path(self, now):
+        """Continuous pure pursuit along the whole anchored course -- no
+        per-waypoint stop-and-go (that is what _control_loop's waypoint branch
+        does), because these paths exist to measure uninterrupted curvature
+        tracking."""
+        self._ensure_route()
+        if self.route is None:
+            self._hold("waiting for odometry to anchor the test path")
+            return
+        if self.run_finished:
+            self._publish(0.0, 0.0)
+            return
+
+        err = self._record_tracking_error()
+
+        lookahead_point = None
+        for i in range(self.route_idx, len(self.route)):
+            if distance(self.car_pos, self.route[i]) >= self.lookahead_distance:
+                lookahead_point = self.route[i]
+                self.route_idx = i
+                break
+
+        # No point far enough ahead left in the course: the rover is inside
+        # one lookahead of the end. Closed courses (circle, infinity) return
+        # to their own start, so "near the final point" alone would fire on
+        # the first tick -- requiring the index to have run out first is what
+        # makes completion mean "drove the whole thing", not "stands near the
+        # end".
+        if lookahead_point is None:
+            self.route_idx = len(self.route) - 1
+            if distance(self.car_pos, self.route[-1]) < self.goal_tolerance:
+                self._finish_run()
+                return
+            lookahead_point = self.route[-1]
+
+        if self.route_idx == self._last_seen_idx:
+            if self._stuck_since is None:
+                self._stuck_since = now
+            elif now - self._stuck_since >= self.stuck_timeout_s:
+                self.get_logger().warn(
+                    f"lookahead index {self.route_idx} hasn't advanced in "
+                    f"{self.stuck_timeout_s:.1f}s (stuck circling) -- forcing it forward."
+                )
+                self.route_idx = min(self.route_idx + 1, len(self.route) - 1)
+                lookahead_point = self.route[self.route_idx]
+                self._stuck_since = None
+                self._last_seen_idx = self.route_idx
+        else:
+            self._stuck_since = None
+            self._last_seen_idx = self.route_idx
+
+        local_x, local_y = point_global_to_local(lookahead_point, self.car_yaw, self.car_pos)
+        curvature = max(-self.max_curvature, min(self.max_curvature, calc_curvature(local_x, local_y)))
+        angular = curvature * self.base_velocity
+
+        self.get_logger().info(
+            f"{self.test_path_name} {self.route_idx + 1}/{len(self.route)} | "
+            f"pos: [{self.car_pos[0]:.2f}, {self.car_pos[1]:.2f}] | "
+            f"err: {err:.3f} m (max {self.err_max:.3f}) | curv: {curvature:.3f}",
+            throttle_duration_sec=0.5,
+        )
+        self._publish(self.base_velocity, angular)
+
     # ---------- control loop ----------
 
     def _publish(self, linear, angular):
@@ -317,7 +534,13 @@ class CmdVelArbiter(Node):
             return False, "e-stopped"
         if not self.run_started:
             return False, "run not started (call /planner/start)"
-        if self.waypoints is None:
+        if self.test_path_name:
+            # Test paths are natively in the rover's own start-relative frame
+            # (== odom here, see test_path_loader.py), so map->odom never
+            # enters into it -- only the route being anchored, which needs a
+            # pose and so is checked just below.
+            pass
+        elif self.waypoints is None:
             # Fail closed: hold rather than assume an identity map->odom
             # transform. A control loop that confidently drives on a wrong
             # assumed-zero correction is worse than one that just waits.
@@ -361,6 +584,15 @@ class CmdVelArbiter(Node):
         if self.gate_reason:
             self.get_logger().info("cleared to drive")
             self.gate_reason = ""
+
+        if self.test_path_name:
+            # A teleop nudge mid-course must NOT re-anchor: the course is a
+            # fixed piece of ground being measured against, so the rover
+            # resumes chasing it from where the nudge left it rather than
+            # restarting the whole thing under its new pose.
+            self.force_replan = False
+            self._drive_test_path(now)
+            return
 
         if self.force_replan:
             self.leg_ready = False

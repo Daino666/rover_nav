@@ -93,6 +93,32 @@ def generate_launch_description():
                 "call `ros2 service call /planner/start std_srvs/srv/Trigger` when ready."
             ),
         ),
+        DeclareLaunchArgument(
+            "test_path",
+            default_value="",
+            choices=["", "straight_line", "lane_change", "circle", "circle_transition", "infinity"],
+            description=(
+                "Drive one of rover_nav's real-world test courses instead of "
+                "global_path_planner.py's WAYPOINTS -- a dense, already-shaped path "
+                "driven continuously (no per-waypoint stops) to measure path-tracking "
+                "accuracy on the physical rover. Empty (default) keeps the waypoint "
+                "behaviour. Preview a course first with "
+                "`ros2 launch rover_nav view_test_path.launch.py test_path:=<name>`; see "
+                "rover_nav/README.md's \"Real-world path-tracking tests\" for the field procedure."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "test_path_anchor",
+            default_value="start_pose",
+            choices=["start_pose", "odom_origin"],
+            description=(
+                "Where a test_path course is placed. 'start_pose' anchors its origin and "
+                "heading to the rover's live pose when /planner/start is called (park the "
+                "rover on the marked origin, then start). 'odom_origin' drives the CSV "
+                "coordinates verbatim in odom, valid only if the rover has not moved since "
+                "localization came up."
+            ),
+        ),
 
         DeclareLaunchArgument("start_checker", default_value="true"),
         # Preserve the top-level choice before rover_drive_auto.launch.py sets
@@ -181,6 +207,8 @@ def generate_launch_description():
             output="screen",
             parameters=[{
                 "autostart": LaunchConfiguration("pure_pursuit_autostart"),
+                "test_path": LaunchConfiguration("test_path"),
+                "test_path_anchor": LaunchConfiguration("test_path_anchor"),
             }],
         ),
 

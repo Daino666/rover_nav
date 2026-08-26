@@ -20,6 +20,9 @@ install(
     scripts/global_path_planner.py
     scripts/rover_controller_pure_pursuit.py
     scripts/publish_global_path.py
+    scripts/publish_test_path.py
+    scripts/test_path_loader.py
+    scripts/test_path_viz.py
     scripts/cmd_vel_arbiter.py
     scripts/check_heading.py
     scripts/map_odom_broadcaster.py
@@ -53,6 +56,14 @@ install(DIRECTORY
 install(DIRECTORY
   scripts/Sounds
   DESTINATION share/${PROJECT_NAME}/sounds/
+)
+
+# Real-world path-tracking test courses. Installed as data (not programs) so
+# test_path_loader.py finds them via the package share directory at runtime;
+# regenerate with scripts/test_paths/generate_test_paths.py and rebuild.
+install(DIRECTORY
+  scripts/test_paths/output/
+  DESTINATION share/${PROJECT_NAME}/test_paths
 )
 
 if(BUILD_TESTING)
