@@ -19,7 +19,10 @@ PLANE_DIST_THRESH = 0.05   # ground plane fit tolerance (m)
 DBSCAN_EPS        = 0.80   # cluster neighbourhood radius (m)
 DBSCAN_MIN_PTS    = 5     # min points to form a cluster
 MIN_CLUSTER_PTS   = 15     # discard clusters smaller than this after downsampling
-MAX_CENTROID_Z    = 1.5    # discard clusters whose centroid Z exceeds this (m)
+MAX_RANGE         = 1.5    # ignore obstacles whose NEAREST point is beyond this (m).
+                           # Gating on the centroid instead hid anything straddling the
+                           # limit -- a wall spanning 1.3-2.0 m has its centroid at 1.65
+                           # and vanished even though part of it was well inside range.
 # Ignore anything shorter than this. Measured as the cluster's TALLEST point
 # above the ground surface -- GROUND_MARGIN stays low so the object's base is
 # still captured and its true height can be measured. Raising GROUND_MARGIN to
@@ -31,7 +34,10 @@ MIN_OBSTACLE_HEIGHT = 0.15  # discard clusters shorter than this (m)
 # to base_link, so optical +Y is gravity-aligned and height above ground is
 # simply (CAMERA_HEIGHT - y). These are ROS parameters so they can be tuned
 # live with `ros2 param set /obstacle_detector <name> <value>`.
-CAMERA_HEIGHT     = 0.43   # optical centre above ground (m), measured on the rover
+CAMERA_HEIGHT     = 0.489  # optical centre above ground (m). Measured from a live
+                           # ground-plane fit on the rover, not taped: a hand estimate
+                           # of 0.43 was ~6 cm low. Only used when the plane fit is
+                           # rejected, but it also selects the band the fit runs on.
 GROUND_MARGIN     = 0.04   # keep points this far above the ground surface (m).
                            # 0.08 hid anything under ~20 cm; 0.04 drops the
                            # detection floor to ~10 cm at the cost of needing
@@ -61,7 +67,7 @@ class ObstacleDetector(Node):
             ('normal_tol_deg', NORMAL_TOL_DEG),
             ('voxel_size', VOXEL_SIZE),
             ('dbscan_eps', DBSCAN_EPS),
-            ('max_centroid_z', MAX_CENTROID_Z),
+            ('max_range', MAX_RANGE),
             ('min_obstacle_height', MIN_OBSTACLE_HEIGHT),
         ):
             self.declare_parameter(name, float(default))
@@ -181,7 +187,7 @@ class ObstacleDetector(Node):
             c = pts[sel]
             if len(c) < self._p('min_cluster_pts'):
                 continue
-            if c[:, 2].mean() > self._p('max_centroid_z'):
+            if c[:, 2].min() > self._p('max_range'):
                 continue
             # voxel_down_sample averages each voxel, so the topmost voxel sits
             # ~half a leaf below the object's real top. Add that back, otherwise
