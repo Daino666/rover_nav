@@ -28,6 +28,9 @@ install(
     scripts/yaw_source_compare.py
     scripts/imu_deep_log.py
     scripts/odrive_fault_log.py
+    scripts/Rover_path_controller/pcl_obstacle_detector.py
+    scripts/Rover_path_controller/obstacle_detector_node.py
+    scripts/Rover_path_controller/obstacle_avoidance.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

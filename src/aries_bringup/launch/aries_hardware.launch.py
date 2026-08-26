@@ -317,7 +317,10 @@ def generate_launch_description():
         DeclareLaunchArgument("suppress_moveit_execution_logs", default_value="false"),
         DeclareLaunchArgument(
             "enable_depth_sensor",
-            default_value="auto",
+            # Default off: the single D435i is reserved for the standalone
+            # obstacle-detection pipeline. Pass enable_depth_sensor:=auto to
+            # restore the previous auto-detect behaviour.
+            default_value="false",
             choices=["auto", "true", "false"],
             description="Auto-detect, force-enable, or disable the gripper RealSense used by vision and its DepthCloud",
         ),
@@ -332,7 +335,8 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "enable_front_camera",
-            default_value="auto",
+            # Default off for the same reason; enable_front_camera:=auto restores it.
+            default_value="false",
             choices=["auto", "true", "false"],
             description="Start a driver for the rover front camera (publishes /camera/*)",
         ),

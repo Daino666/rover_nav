@@ -30,9 +30,15 @@ def generate_launch_description():
         DeclareLaunchArgument("serial_port", default_value="/dev/serial/by-id/usb-Teensyduino_USB_Serial_16739090-if00"),
         DeclareLaunchArgument("suppress_rebel_logs", default_value="true"),
         DeclareLaunchArgument("suppress_moveit_execution_logs", default_value="true"),
-        DeclareLaunchArgument("enable_depth_sensor", default_value="auto", choices=["auto", "true", "false"]),
+        # Cameras default OFF so the single D435i stays free for the standalone
+        # obstacle-detection pipeline (rover_nav/obstacle_detection.launch.py),
+        # which starts its own RealSense driver. Two drivers cannot share the
+        # device. To hand the camera back to this launch, pass
+        #   enable_depth_sensor:=auto enable_front_camera:=auto
+        # or restore both default_value="auto" here and in aries_hardware.launch.py.
+        DeclareLaunchArgument("enable_depth_sensor", default_value="false", choices=["auto", "true", "false"]),
         DeclareLaunchArgument("gripper_camera_serial", default_value=""),
-        DeclareLaunchArgument("enable_front_camera", default_value="auto", choices=["auto", "true", "false"]),
+        DeclareLaunchArgument("enable_front_camera", default_value="false", choices=["auto", "true", "false"]),
         DeclareLaunchArgument("front_camera_serial", default_value=""),
         DeclareLaunchArgument(
             "use_static_wheel_joint_publisher",
