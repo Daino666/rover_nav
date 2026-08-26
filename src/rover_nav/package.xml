@@ -24,6 +24,11 @@
   <exec_depend>message_filters</exec_depend>
   <exec_depend>cv_bridge</exec_depend>
   <exec_depend>pcl_ros</exec_depend>
+  <exec_depend>nav2_controller</exec_depend>
+  <exec_depend>nav2_behaviors</exec_depend>
+  <exec_depend>nav2_bt_navigator</exec_depend>
+  <exec_depend>nav2_regulated_pure_pursuit_controller</exec_depend>
+  <exec_depend>nav2_lifecycle_manager</exec_depend>
   <test_depend>ament_cmake_pytest</test_depend>
   <test_depend>python3-pytest</test_depend>
   <member_of_group>rosidl_interface_packages</member_of_group>

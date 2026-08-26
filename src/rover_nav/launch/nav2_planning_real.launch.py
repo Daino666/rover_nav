@@ -2,16 +2,31 @@
 """
 Nav2 planning stack (map_server -> global_costmap -> planner_server
 (SmacPlanner2D) -> smoother_server (SimpleSmoother)) wired up for the real
-rover: brings up localization.launch.py (encoder odom + BNO055 IMU + EKF,
-which publishes the live odom->base_footprint transform itself --
-ekf_config.yaml has publish_tf: true) plus map_odom_broadcaster.py (the
-static map->odom alignment transform -- see that script's docstring for how
-to set map_to_odom_yaw_deg on competition day). Together those give the
-costmap a real, moving map->base_footprint chain, so unlike
-nav2_planning.launch.py this needs no static_tf node.
+rover.
 
-Contrast nav2_planning_sim.launch.py, which uses odom_tf_broadcaster.py
-instead because the sim's EKF has publish_tf forced False.
+Does NOT start localization. It requires
+`ros2 launch aries_bringup full_hardware.launch.py` (or at least
+`rover_drive.launch.py`) to already be running, which brings up the real
+localization stack on its own -- aries_localization/localization.launch.py:
+MicroStrain 3DM-GX5-AHRS IMU + Odom.py (wheel encoders over CAN) + EKF
+(base_link_frame overridden to base_footprint, publish_tf: true) -- plus
+map_odom_broadcaster.py for the static map->odom alignment (see that
+script's docstring for how to set map_to_odom_yaw_deg on competition day).
+Together those already give a real, moving map->base_footprint chain.
+
+This file used to bring up its own second copy of that chain (rover_nav's
+own localization.launch.py, which drove a BNO055 IMU on /dev/ttyUSB0 --
+not the rover's actual IMU per aries_imu/imu.launch.py, which is the
+MicroStrain) plus its own map_odom_broadcaster.py. Running that alongside
+full_hardware.launch.py meant two Odom.py processes both publishing /odom,
+two nodes both named ekf_filter_node, and two both named
+map_odom_broadcaster -- a real conflict, not a redundancy. Removed; this
+launch file now only adds the planning nodes on top of an
+already-running full_hardware.launch.py.
+
+Contrast nav2_planning_sim.launch.py, which brings up its own TF chain
+(odom_tf_broadcaster.py) because there is no equivalent always-on real
+bringup in sim.
 
 Does NOT bring up AMCL/controller_server/bt_navigator -- planning only, same
 as nav2_planning.launch.py. Trigger it the same way: nav2_simple_commander's
@@ -19,14 +34,14 @@ BasicNavigator.getPath()/smoothPath(), or `ros2 action send_goal` on
 /compute_path_to_pose and /smooth_path.
 
 Usage:
+  ros2 launch aries_bringup full_hardware.launch.py   # brings up localization
   ros2 launch rover_nav nav2_planning_real.launch.py
   ros2 launch rover_nav nav2_planning_real.launch.py rviz:=true
 """
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.actions import DeclareLaunchArgument
 from launch.conditions import IfCondition
-from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
@@ -50,21 +65,6 @@ def generate_launch_description():
     rviz_arg = DeclareLaunchArgument(
         'rviz', default_value='false',
         description='Also launch RViz pre-configured to show the map + planned paths live',
-    )
-
-    localization = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource([
-            PathJoinSubstitution([
-                FindPackageShare('rover_nav'), 'launch', 'localization.launch.py'
-            ])
-        ])
-    )
-
-    map_odom_broadcaster_node = Node(
-        package='rover_nav',
-        executable='map_odom_broadcaster.py',
-        name='map_odom_broadcaster',
-        output='screen',
     )
 
     map_server_node = Node(
@@ -111,8 +111,6 @@ def generate_launch_description():
     return LaunchDescription([
         map_arg,
         rviz_arg,
-        localization,
-        map_odom_broadcaster_node,
         map_server_node,
         planner_server_node,
         smoother_server_node,

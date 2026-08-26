@@ -73,11 +73,28 @@ standalone testing with a manual `static_tf` flag). The split exists
 because `global_costmap` needs a real `map -> base_footprint` chain, and
 sim and real provide it via genuinely different nodes:
 
-- **Real** (`nav2_planning_real.launch.py`): includes `localization.launch.py`
-  (encoder odom + BNO055 IMU + EKF) plus `map_odom_broadcaster.py`. The
-  real EKF (`ekf_config.yaml`) has `publish_tf: true`, so it publishes
-  `odom -> base_footprint` itself; `map_odom_broadcaster.py` adds the
-  static `map -> odom` alignment on top.
+- **Real** (`nav2_planning_real.launch.py`): starts **only** the planning
+  nodes (`map_server`, `planner_server`, `smoother_server`,
+  `lifecycle_manager`) and assumes `full_hardware.launch.py` is already
+  running to provide the TF chain. `full_hardware.launch.py` →
+  `rover_drive.launch.py` → `aries_localization/localization.launch.py`
+  brings up the real stack: MicroStrain 3DM-GX5-AHRS IMU + `Odom.py`
+  (wheel encoders over CAN) + EKF (`base_link_frame` overridden to
+  `base_footprint`, `publish_tf: true`, so it publishes
+  `odom -> base_footprint` itself) + `map_odom_broadcaster.py` for the
+  static `map -> odom` alignment.
+
+  **This launch file used to bring up a second, independent copy of that
+  chain itself** — `rover_nav/launch/localization.launch.py` (BNO055 IMU
+  on `/dev/ttyUSB0` — not the rover's real IMU; see `aries_imu/imu.launch.py`,
+  which calls that "the old ... path") plus its own
+  `map_odom_broadcaster.py`. Running it alongside `full_hardware.launch.py`
+  (the documented bring-up below) meant **two** `Odom.py` processes both
+  publishing `/odom`, **two** nodes both named `ekf_filter_node`, and
+  **two** both named `map_odom_broadcaster` — a conflict, not a redundancy,
+  and the BNO055 branch would never even see its hardware. Removed
+  2026-08-26; do not re-add localization nodes to this launch file without
+  first checking whether `full_hardware.launch.py` already provides them.
 - **Sim** (`nav2_planning_sim.launch.py`): includes `odom_tf_broadcaster.py`
   instead. The *sim's* EKF (a different instance, from `my_robot.launch.py`
   in `aries_bringup`) has `publish_tf` forced `False` — see that script's
@@ -92,14 +109,16 @@ sim and real provide it via genuinely different nodes:
 Both new launch files declare a `map` argument (see §4) and `rviz`
 (default `false`) — no other required args.
 
-Full real-robot bring-up, three separate commands:
+Full real-robot bring-up, two separate commands (order matters —
+`full_hardware.launch.py` must be up first so the TF chain exists before
+`planner_server`/`global_costmap` start asking for it):
 ```bash
-ros2 launch aries_bringup full_hardware.launch.py         # robot model, real drive (add start_pure_pursuit:=false if you don't want the waypoint follower armed)
+ros2 launch aries_bringup full_hardware.launch.py         # robot model, real drive, localization (add start_pure_pursuit:=false if you don't want the waypoint follower armed)
 ros2 launch rover_nav nav2_planning_real.launch.py rviz:=true
 # then trigger a path request — see §2 / §5
 ```
-`full_hardware.launch.py` requires real hardware: BNO055 IMU on
-`/dev/ttyUSB0` (via `localization.launch.py`), Teensy on
+`full_hardware.launch.py` requires real hardware: MicroStrain 3DM-GX5-AHRS
+IMU on `/dev/microstrain_main`, Teensy on
 `/dev/serial/by-id/usb-Teensyduino_USB_Serial_...`, CAN interface `can0`.
 If those aren't present/powered, expect hangs or errors from those specific
 nodes rather than a clean launch failure.
@@ -153,15 +172,46 @@ silently rather than error.
 
 ---
 
-## 6. Open items, not yet done
+## 6. Driving the real robot: `nav2_navigation_real.launch.py`
+
+2026-08-26: added the local-planner half `nav2_planning_real.launch.py`
+deliberately never had — `local_costmap → controller_server
+(RegulatedPurePursuitController) → behavior_server → bt_navigator`, same
+shape as the sim-only `nav2_navigation_sim.launch.py`. This is what
+actually drives the robot along a planned path, not just previews one.
+
+The real camera chain (`obstacle_detection.launch.py`: RealSense with
+`pointcloud.enable: true` → PassThrough → SOR → `/pcl/denoised`) already
+matched `nav2_local_planner_params.yaml`'s `obstacle_layer` expectations
+exactly, with no adaptation needed — unlike sim, which has no native
+points topic and needs `depth_to_pointcloud.py` to synthesize one from a
+bridged depth image. That script is not used on the real path.
+
+Full real bring-up, three commands:
+```bash
+ros2 launch aries_bringup full_hardware.launch.py use_gui:=false
+ros2 launch rover_nav nav2_navigation_real.launch.py rviz:=true
+ros2 run rover_nav send_waypoints.py --start S1 --points W6 W5 W7 W8 --use-sim-time false
+```
+`send_waypoints.py` needed no changes — it already targets
+`/pcl/denoised` and uses `localizer='robot_localization'` (not `amcl`),
+which is what this stack (and the sim one) actually provides.
+
+`nav2_navigation_real.launch.py` still only starts the planning +
+local-planning nodes; it depends on `full_hardware.launch.py` already
+running for the same reason `nav2_planning_real.launch.py` does (§3).
+
+---
+
+## 7. Open items, not yet done
 
 - `~/test/src/src/rover_nav` vs `~/jazzy_ws/src/rover_nav` divergence
   (§1) — needs a real merge/reconciliation with hsm, ideally after finally
   putting this under git.
-- No `controller_server`/local costmap/`bt_navigator` — planned paths
-  don't drive the robot yet, and there's no live obstacle avoidance (see
-  §2). If/when that's wired up, it should consume `planner_server`'s
-  output, not duplicate `cmd_vel_arbiter.py`'s separate pure-pursuit path.
+- ~~No `controller_server`/local costmap/`bt_navigator`~~ — done, see §6.
+  `cmd_vel_arbiter.py`'s separate pure-pursuit path (hardcoded `WAYPOINTS`
+  in `global_path_planner.py`) still exists unchanged and is unrelated to
+  this stack — don't conflate the two.
 - `map_odom_broadcaster.py`'s `map_to_odom_yaw_deg` alignment is still a
   manually-set placeholder (identity) in `global_path_planner.py` — the
   actual competition-day alignment procedure is still undecided (also
