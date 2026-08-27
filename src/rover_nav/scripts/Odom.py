@@ -67,14 +67,36 @@ class OdometryNode(Node):
         )
         
         # Which CAN node id drives which side, front -> rear. Interleaved
-        # ([0,4,3] right, [5,1,2] left) from the 2026-08-12 reassembly until
-        # the node ids were reassigned on 2026-08-23 back to contiguous
-        # blocks. Keep them equal to the identically named parameters in
+        # ([0,4,3] right, [5,1,2] left) from the 2026-08-12 chassis reassembly
+        # until the node ids were reassigned on 2026-08-23 back to contiguous
+        # blocks by side, re-verified then by arming one axis at a time and
+        # watching which physical wheel moved:
+        #   0 Front-Left    1 Middle-Left   2 Back-Left
+        #   3 Back-Right    4 Middle-Right  5 Front-Right
+        #
+        # Both lists are written FRONT -> REAR, hence right [5, 4, 3] rather
+        # than ascending node-id order [3, 4, 5]. Order only affects which axis
+        # id is named in slip-outlier logs (the displacement itself is a median
+        # over the side), but keep it consistent with the bridge YAML.
+        #
+        # Independently corroborated 2026-08-26 from accumulated encoder
+        # positions on the live bus: nodes 0/1/2 agreed with each other to
+        # within 0.30 rev and 3/4/5 to within 0.40 rev, while the two groups
+        # sat ~12 rev apart (the net turning in the rover's driving history).
+        # Wheels only track each other that closely over ~390 rev if they
+        # share a side. identify_wheel_axes.py re-runs that check by hand,
+        # without arming any motor.
+        #
+        # Keep them equal to the identically named parameters in
         # aries_drive/config/cmd_vel_odrive_bridge.yaml: if commanding and
         # odometry disagree about which side an axis is on, the rover still
         # drives correctly while reporting a mirrored twist, which the EKF then
-        # fuses as real motion.
-        self.declare_parameter("right_wheels", [3, 4, 5])
+        # fuses as real motion. Carrying the stale pre-08-23 interleaving here
+        # was subtler than a full mirror -- robust_side_displacement's median
+        # rejected the one wrong-side wheel per group, so d_center and vx
+        # stayed correct, but that wheel was flagged an outlier on every turn,
+        # de-weighting odom vx by slip_covariance_multiplier through each one.
+        self.declare_parameter("right_wheels", [5, 4, 3])
         self.declare_parameter("left_wheels", [0, 1, 2])
         self.right_wheels = [int(a) for a in self.get_parameter("right_wheels").value]
         self.left_wheels = [int(a) for a in self.get_parameter("left_wheels").value]

@@ -54,11 +54,14 @@ import time
 
 sys.path.insert(0, os.path.dirname(__file__))
 from global_path_planner import distance, hermite_leg, GLOBAL_RESOLUTION, WAYPOINTS  # noqa: E402
-from test_path_loader import TEST_PATHS, anchor_path, load_markers, load_test_path, path_length  # noqa: E402
+from test_path_loader import (  # noqa: E402
+    TEST_PATHS, anchor_path, coerce_name, load_markers, load_test_path, path_length,
+)
 import test_path_viz  # noqa: E402
 
 import rclpy
 import tf2_ros
+from rcl_interfaces.msg import ParameterDescriptor
 from rclpy.duration import Duration as RclpyDuration
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
@@ -118,8 +121,15 @@ class CmdVelArbiter(Node):
         self.declare_parameter("odom_timeout_s", 0.5)
         self.declare_parameter("control_rate_hz", 20.0)
         self.declare_parameter("stuck_timeout_s", 3.0)
-        self.declare_parameter("test_path", "")
+        # dynamic_typing: the value can legitimately arrive as a DOUBLE --
+        # see test_path_loader.coerce_name() for why "infinity" does exactly that.
+        self.declare_parameter("test_path", "", ParameterDescriptor(dynamic_typing=True))
         self.declare_parameter("test_path_anchor", "start_pose")
+        self.declare_parameter("test_path_goal_tolerance", 0.25)
+        self.declare_parameter("path_goal_tolerance", 0.05)
+        self.declare_parameter("path_csv", "")
+        self.declare_parameter("path_frame", "map")
+        self.declare_parameter("waypoints_csv", "")
 
         self.cmd_vel_topic = str(self.get_parameter("cmd_vel_topic").value)
         self.teleop_topic = str(self.get_parameter("teleop_topic").value)
@@ -136,8 +146,27 @@ class CmdVelArbiter(Node):
         self.odom_timeout_s = float(self.get_parameter("odom_timeout_s").value)
         control_rate = max(1.0, float(self.get_parameter("control_rate_hz").value))
         self.stuck_timeout_s = float(self.get_parameter("stuck_timeout_s").value)
-        self.test_path_name = str(self.get_parameter("test_path").value).strip()
+        self.test_path_name = coerce_name(self.get_parameter("test_path").value)
         self.test_path_anchor = str(self.get_parameter("test_path_anchor").value).strip()
+        # Deliberately tighter than goal_tolerance. That one is sized for
+        # stopping *at* each of several waypoints, where half a metre of slop
+        # costs nothing; a test course is a fixed length being measured, so
+        # ending half a metre short would leave the last stretch of every
+        # course -- and on the closed loops, the loop closure itself -- never
+        # actually driven.
+        self.test_path_goal_tolerance = float(
+            self.get_parameter("test_path_goal_tolerance").value)
+        # Much tighter than test_path_goal_tolerance (0.25). A test course is
+        # judged on the shape driven, so ending a handspan short of the last
+        # point costs nothing. A global path's final point IS a waypoint the
+        # rover is required to cross -- stopping 25 cm short of it fails the
+        # one thing the run exists to do. Measured: with 0.25 the final
+        # waypoint was missed by 24.7 cm while every crossed waypoint before it
+        # came within 4.3 cm.
+        self.path_goal_tolerance = float(self.get_parameter("path_goal_tolerance").value)
+        self.path_csv = str(self.get_parameter("path_csv").value).strip()
+        self.path_frame = str(self.get_parameter("path_frame").value).strip()
+        self.waypoints_csv = str(self.get_parameter("waypoints_csv").value).strip()
 
         # ---- pose / drive state
         self.car_pos = None
@@ -176,6 +205,15 @@ class CmdVelArbiter(Node):
         # /planner/start so a repeat run re-anchors to where the rover now is.
         self.test_path_points = None
         self.test_markers = None
+        # Global-path mode: a dense path CSV from plan_global_path.py, driven
+        # straight through without stopping at the waypoints -- the waypoint
+        # sequencer's stop-and-go is the wrong shape for this, since the goal
+        # is to CROSS each point, not arrive at it. cross_best records the
+        # closest the rover's centre actually got to each one.
+        self.path_points = None
+        self.cross_names = []
+        self.cross_xy = []
+        self.cross_best = []
         self.route = None
         self.route_idx = 0
         self.run_finished = False
@@ -184,6 +222,8 @@ class CmdVelArbiter(Node):
         self.err_count = 0
         if self.test_path_name:
             self._load_test_path()
+        elif self.path_csv:
+            self._load_path_csv()
 
         # ---- map -> odom lookup (see _try_load_waypoints)
         self.tf_buffer = tf2_ros.Buffer()
@@ -207,7 +247,7 @@ class CmdVelArbiter(Node):
         # test-path mode -- the waypoint route has publish_global_path.py.
         self.route_pub = None
         self.route_markers_pub = None
-        if self.test_path_name:
+        if self.test_path_name or self.path_csv:
             self.route_pub = self.create_publisher(
                 Path, test_path_viz.PATH_TOPIC, test_path_viz.latched_qos())
             self.route_markers_pub = self.create_publisher(
@@ -228,7 +268,11 @@ class CmdVelArbiter(Node):
 
         self.create_timer(1.0 / control_rate, self._control_loop)
 
-        if self.test_path_name:
+        if self.path_csv:
+            what = (f"global path '{os.path.basename(self.path_csv)}' "
+                    f"({len(self.path_points)} poses, {path_length(self.path_points):.1f} m, "
+                    f"frame={self.path_frame}, {len(self.cross_xy)} waypoint(s) to cross)")
+        elif self.test_path_name:
             what = (f"test path '{self.test_path_name}' ({len(self.test_path_points)} points, "
                     f"{path_length(self.test_path_points):.1f} m, anchor={self.test_path_anchor})")
         else:
@@ -327,7 +371,7 @@ class CmdVelArbiter(Node):
         against). map->odom never changes during a run, so this only needs
         to succeed once -- cheap to retry every tick from _control_loop
         until it does."""
-        if self.waypoints is not None or self.test_path_name:
+        if self.waypoints is not None or self.test_path_name or self.path_csv:
             return
         try:
             tfm = self.tf_buffer.lookup_transform(
@@ -378,6 +422,33 @@ class CmdVelArbiter(Node):
         self.test_path_points = load_test_path(self.test_path_name)
         self.test_markers = [(mid, x, y) for mid, x, y, _ in load_markers(self.test_path_name)]
 
+    def _load_path_csv(self):
+        """Read a dense path CSV (and its waypoint list) written by
+        plan_global_path.py. Fatal on a bad file for the same reason
+        _load_test_path is: a rover that comes up armed but silently pathless
+        is the failure the gating exists to prevent."""
+        import csv as _csv
+        if self.path_frame not in ("map", "odom"):
+            raise SystemExit(f"path_frame must be 'map' or 'odom', got '{self.path_frame}'")
+        try:
+            with open(self.path_csv, newline="") as f:
+                self.path_points = [[float(r["x_m"]), float(r["y_m"])]
+                                    for r in _csv.DictReader(f)]
+        except OSError as exc:
+            raise SystemExit(f"cannot read path_csv '{self.path_csv}': {exc}")
+        if len(self.path_points) < 2:
+            raise SystemExit(f"path_csv '{self.path_csv}' has fewer than 2 poses")
+
+        if self.waypoints_csv:
+            try:
+                with open(self.waypoints_csv, newline="") as f:
+                    for r in _csv.DictReader(f):
+                        self.cross_names.append(r["name"])
+                        self.cross_xy.append([float(r["x_m"]), float(r["y_m"])])
+            except OSError as exc:
+                raise SystemExit(f"cannot read waypoints_csv '{self.waypoints_csv}': {exc}")
+            self.cross_best = [float("inf")] * len(self.cross_xy)
+
     def _ensure_route(self):
         """Place the loaded course into odom, once per run.
 
@@ -396,6 +467,42 @@ class CmdVelArbiter(Node):
             return
         if self.car_pos is None or self.car_yaw is None:
             return
+
+        if self.path_csv:
+            # A global path is in the competition's map frame, not the rover's
+            # start-relative frame, so unlike a test path it genuinely needs the
+            # map->odom correction -- the same one the waypoint sequencer waits
+            # on. Fail closed until it is available rather than assuming identity.
+            if self.path_frame == "map":
+                try:
+                    tfm = self.tf_buffer.lookup_transform(
+                        "odom", "map", rclpy.time.Time(), timeout=RclpyDuration(seconds=0.1))
+                except tf2_ros.TransformException:
+                    return
+                t = tfm.transform.translation
+                yaw = quat_to_yaw(tfm.transform.rotation.x, tfm.transform.rotation.y,
+                                  tfm.transform.rotation.z, tfm.transform.rotation.w)
+                self.route = [transform_point(p, t.x, t.y, yaw) for p in self.path_points]
+                self.cross_xy = [transform_point(p, t.x, t.y, yaw) for p in self.cross_xy]
+            else:
+                self.route = [list(p) for p in self.path_points]
+            self.cross_best = [float("inf")] * len(self.cross_xy)
+            self.route_idx = 0
+            self._last_seen_idx = None
+            self._stuck_since = None
+            self.err_max = self.err_sum = 0.0
+            self.err_count = 0
+            stamp = self.get_clock().now().to_msg()
+            self.route_pub.publish(test_path_viz.path_msg(self.route, stamp, "odom"))
+            if self.cross_xy:
+                self.route_markers_pub.publish(test_path_viz.marker_msgs(
+                    [(i, x, y) for i, (x, y) in enumerate(self.cross_xy)], stamp, "odom"))
+            self.get_logger().info(
+                f"global path '{os.path.basename(self.path_csv)}' ready in odom: "
+                f"{len(self.route)} poses, {path_length(self.route):.1f} m, "
+                f"{len(self.cross_xy)} waypoint(s) to cross. Driving straight through -- no stops.")
+            return
+
         if self.test_path_anchor == "start_pose":
             self.route = anchor_path(self.test_path_points, self.car_pos, self.car_yaw)
             markers = anchor_path(
@@ -437,6 +544,14 @@ class CmdVelArbiter(Node):
         lo = max(0, self.route_idx - 20)
         hi = min(len(self.route), self.route_idx + 40)
         err = min(distance(self.car_pos, self.route[i]) for i in range(lo, hi))
+        # Closest approach per waypoint, sampled continuously. The rover is
+        # meant to CROSS these, not stop at them, so there is no arrival event
+        # to measure at -- the smallest distance seen over the whole run is the
+        # measurement.
+        for k, wp in enumerate(self.cross_xy):
+            d = distance(self.car_pos, wp)
+            if d < self.cross_best[k]:
+                self.cross_best[k] = d
         self.err_max = max(self.err_max, err)
         self.err_sum += err
         self.err_count += 1
@@ -445,6 +560,20 @@ class CmdVelArbiter(Node):
     def _finish_run(self):
         mean = self.err_sum / self.err_count if self.err_count else 0.0
         self.run_finished = True
+
+        if self.path_csv:
+            lines = [f"    {n:<8} {d * 100:6.1f} cm" for n, d in
+                     zip(self.cross_names, self.cross_best)]
+            worst = max(self.cross_best) if self.cross_best else float("nan")
+            self.get_logger().info(
+                f"global path COMPLETE -- tracking error vs plan: mean {mean:.3f} m, "
+                f"max {self.err_max:.3f} m over {self.err_count} samples.\n"
+                f"  closest the rover's centre came to each waypoint:\n"
+                + "\n".join(lines)
+                + f"\n    worst: {worst * 100:.1f} cm. Re-run with /planner/start.")
+            self._publish(0.0, 0.0)
+            return
+
         self.get_logger().info(
             f"test path '{self.test_path_name}' COMPLETE -- tracking error vs reference: "
             f"mean {mean:.3f} m, max {self.err_max:.3f} m over {self.err_count} samples. "
@@ -460,7 +589,7 @@ class CmdVelArbiter(Node):
         tracking."""
         self._ensure_route()
         if self.route is None:
-            self._hold("waiting for odometry to anchor the test path")
+            self._hold("waiting for odometry / map->odom to place the path")
             return
         if self.run_finished:
             self._publish(0.0, 0.0)
@@ -483,7 +612,9 @@ class CmdVelArbiter(Node):
         # end".
         if lookahead_point is None:
             self.route_idx = len(self.route) - 1
-            if distance(self.car_pos, self.route[-1]) < self.goal_tolerance:
+            done_radius = (self.path_goal_tolerance if self.path_csv
+                           else self.test_path_goal_tolerance)
+            if distance(self.car_pos, self.route[-1]) < done_radius:
                 self._finish_run()
                 return
             lookahead_point = self.route[-1]
@@ -534,7 +665,11 @@ class CmdVelArbiter(Node):
             return False, "e-stopped"
         if not self.run_started:
             return False, "run not started (call /planner/start)"
-        if self.test_path_name:
+        if self.path_csv:
+            # Anchoring needs the map->odom transform; _ensure_route holds
+            # until it arrives, and _drive_test_path reports that as a hold.
+            pass
+        elif self.test_path_name:
             # Test paths are natively in the rover's own start-relative frame
             # (== odom here, see test_path_loader.py), so map->odom never
             # enters into it -- only the route being anchored, which needs a
@@ -585,7 +720,7 @@ class CmdVelArbiter(Node):
             self.get_logger().info("cleared to drive")
             self.gate_reason = ""
 
-        if self.test_path_name:
+        if self.test_path_name or self.path_csv:
             # A teleop nudge mid-course must NOT re-anchor: the course is a
             # fixed piece of ground being measured against, so the rover
             # resumes chasing it from where the nudge left it rather than

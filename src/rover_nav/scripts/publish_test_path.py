@@ -25,11 +25,12 @@ import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
 from test_path_loader import (  # noqa: E402
-    TEST_PATHS, available, load_markers, load_test_path, path_length,
+    TEST_PATHS, available, coerce_name, load_markers, load_test_path, path_length,
 )
 import test_path_viz  # noqa: E402
 
 import rclpy
+from rcl_interfaces.msg import ParameterDescriptor
 from rclpy.node import Node
 from nav_msgs.msg import Path
 from visualization_msgs.msg import MarkerArray
@@ -42,8 +43,11 @@ def main(args=None):
     rclpy.init(args=args)
     node = Node("publish_test_path")
 
-    node.declare_parameter("test_path", "straight_line")
-    name = str(node.get_parameter("test_path").value).strip()
+    # dynamic_typing: the value can legitimately arrive as a DOUBLE -- see
+    # coerce_name() for why "infinity" does exactly that.
+    node.declare_parameter(
+        "test_path", "straight_line", ParameterDescriptor(dynamic_typing=True))
+    name = coerce_name(node.get_parameter("test_path").value)
 
     if name not in TEST_PATHS:
         node.get_logger().error(

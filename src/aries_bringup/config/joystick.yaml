@@ -54,7 +54,7 @@ rover_joystick_controller:
     num_axes: 6
     # CAN node id -> wheel, re-verified 2026-08-23; keep in step with
     # aries_drive/config/cmd_vel_odrive_bridge.yaml.
-    right_wheels: [3, 4, 5]
+    right_wheels: [5, 4, 3]
     left_wheels: [0, 1, 2]
 
 rover_cmd_vel_joystick:

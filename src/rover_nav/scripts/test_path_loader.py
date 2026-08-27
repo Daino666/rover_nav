@@ -64,6 +64,24 @@ def search_dirs():
     return dirs
 
 
+def coerce_name(value):
+    """Normalise whatever a ROS parameter delivered into a course name.
+
+    `test_path:=infinity` is the obvious thing for an operator to type -- the
+    CSV and the JPEG are both called `infinity`. But ROS's parameter parsers
+    run the value through C `strtod`, which accepts "infinity" as the float
+    inf, so the parameter arrives as a DOUBLE rather than a string. (This
+    happens on the `ros2 run --ros-args -p` path *and* on the `ros2 launch`
+    path, where launch_ros serialises parameters to a YAML file that the same
+    C parser then re-reads -- ParameterValue(value_type=str) types it
+    correctly on the Python side but does not survive that round trip.)
+    Mapping it back here is cheaper than making every operator remember to
+    quote one of the five course names."""
+    if isinstance(value, float) and math.isinf(value) and value > 0:
+        return "infinity"
+    return str(value).strip()
+
+
 def available():
     """Names that actually have a CSV on disk right now, in TEST_PATHS order."""
     found = []

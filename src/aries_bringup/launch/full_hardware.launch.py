@@ -10,6 +10,7 @@ from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
 
 
@@ -108,6 +109,53 @@ def generate_launch_description():
             ),
         ),
         DeclareLaunchArgument(
+            "map_to_odom_x", default_value="",
+            description="map->odom x offset (m). Empty keeps MAP_TO_ODOM_X from "
+                        "global_path_planner.py.",
+        ),
+        DeclareLaunchArgument(
+            "map_to_odom_y", default_value="",
+            description="map->odom y offset (m). Empty keeps MAP_TO_ODOM_Y.",
+        ),
+        DeclareLaunchArgument(
+            "map_to_odom_yaw_deg", default_value="",
+            description=(
+                "How far the rover's odom frame is rotated inside the competition "
+                "map frame, in degrees. This is what aligns a map-frame path_csv to "
+                "the ground: if the rover's forward axis points along the map's +Y, "
+                "this is 90. It depends on how the rover was parked at boot (odom's "
+                "yaw is zeroed there by imu_yaw_zero.py), so it is a per-run value. "
+                "Empty keeps MAP_TO_ODOM_YAW_DEG from global_path_planner.py."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "path_csv",
+            default_value="",
+            description=(
+                "Drive a dense global path CSV from rover_nav's plan_global_path.py, "
+                "crossing every waypoint without stopping. Empty (default) keeps the "
+                "WAYPOINTS stop-and-go behaviour. Mutually exclusive with test_path."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "waypoints_csv",
+            default_value="",
+            description=(
+                "The <name>_waypoints.csv written alongside path_csv. Optional; supplies "
+                "the per-waypoint crossing-distance report at the end of the run."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "path_frame",
+            default_value="map",
+            choices=["map", "odom"],
+            description=(
+                "Frame path_csv is expressed in. 'map' applies the map->odom correction "
+                "from map_odom_broadcaster.py (correct for plan_global_path.py output); "
+                "'odom' drives the coordinates verbatim."
+            ),
+        ),
+        DeclareLaunchArgument(
             "test_path_anchor",
             default_value="start_pose",
             choices=["start_pose", "odom_origin"],
@@ -191,6 +239,9 @@ def generate_launch_description():
                 "imu_baudrate": LaunchConfiguration("rover_imu_baudrate"),
                 "imu_frame": LaunchConfiguration("rover_imu_frame"),
                 "imu_topic": LaunchConfiguration("rover_imu_topic"),
+                "map_to_odom_x": LaunchConfiguration("map_to_odom_x"),
+                "map_to_odom_y": LaunchConfiguration("map_to_odom_y"),
+                "map_to_odom_yaw_deg": LaunchConfiguration("map_to_odom_yaw_deg"),
             }.items(),
         ),
 
@@ -207,8 +258,21 @@ def generate_launch_description():
             output="screen",
             parameters=[{
                 "autostart": LaunchConfiguration("pure_pursuit_autostart"),
-                "test_path": LaunchConfiguration("test_path"),
-                "test_path_anchor": LaunchConfiguration("test_path_anchor"),
+                # value_type=str is load-bearing, not boilerplate: without it
+                # the value is type-inferred, and ROS's number parser accepts
+                # "infinity" as the float inf (C strtod), so
+                # test_path:=infinity would arrive as a double and fail the
+                # node's STRING parameter declaration.
+                "test_path": ParameterValue(
+                    LaunchConfiguration("test_path"), value_type=str),
+                "test_path_anchor": ParameterValue(
+                    LaunchConfiguration("test_path_anchor"), value_type=str),
+                "path_csv": ParameterValue(
+                    LaunchConfiguration("path_csv"), value_type=str),
+                "waypoints_csv": ParameterValue(
+                    LaunchConfiguration("waypoints_csv"), value_type=str),
+                "path_frame": ParameterValue(
+                    LaunchConfiguration("path_frame"), value_type=str),
             }],
         ),
 

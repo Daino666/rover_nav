@@ -16,7 +16,7 @@ ekf_filter_node:
     odom0: /odom
     odom0_config: [false,  false,  false,   # x, y, z - ONLY position
                    false, false, false,   # roll, pitch, yaw - DON'T use encoder yaw!
-                   true,  true,   false,  # vx, vy, vz - vy fused as a non-holonomic #####make the vy false
+                   true,  false,   false,  # vx, vy, vz - vy fused as a non-holonomic
                    # constraint (Odom.py publishes twist.twist.linear.y = 0.0,
                    # covariance[7] = 0.1, every message). Briefly reverted on
                    # the theory that this is wrong during turns (skid-steer
@@ -38,9 +38,9 @@ ekf_filter_node:
                    # informal trial each way -- worth one more confirming run
                    # before treating this as fully settled.)
                    false, false, false,   # angular velocities
-                   false, false, false]   # accelerations #acceleration in X from the wheels should be true
-    odom0_differential: false # should be true calculates pose based on the differen ce between the previous and incoming data 
-    odom0_relative: false
+                   true, false, false]   # accelerations
+    odom0_differential: true #original False
+    odom0_relative: true #original False
     odom0_queue_size: 10
     
     # ============================================
@@ -57,7 +57,7 @@ ekf_filter_node:
                   false, false, false,   # vx, vy, vz
                   false, false, true,    # vroll, vpitch, vyaw - ONLY vyaw
                   false, false, false]   # ax, ay, az - don't use accel in 2D
-    imu0_differential: false # should be true for our case
+    imu0_differential: true #original False
     # Was intended to make the yaw fused at EKF startup become the zero
     # reference (so "forward" at launch is always yaw=0 regardless of the
     # IMU's absolute mounting offset), but confirmed on hardware to NOT
@@ -83,18 +83,35 @@ ekf_filter_node:
       # doesn't otherwise capture, which a parked rover can't characterize --
       # re-run imu_noise_check.py while actually driving before tightening
       # further.
-    process_noise_covariance: [0.05, 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
+    # process_noise_covariance: [0.05, 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
+    #                             0.0,  0.05, 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
+    #                             0.0,  0.0,  0.06, 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
+    #                             0.0,  0.0,  0.0,  0.03, 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
+    #                             0.0,  0.0,  0.0,  0.0,  0.03, 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
+    #                             0.0,  0.0,  0.0,  0.0,  0.0,  0.004, 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
+    #                             0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.025, 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
+    #                             0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.025, 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
+    #                             0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.04, 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
+    #                             0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.01, 0.0,  0.0,  0.0,  0.0,  0.0,
+    #                             0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.01, 0.0,  0.0,  0.0,  0.0,
+    #                             0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0015, 0.0,  0.0,  0.0,
+    #                             0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.01, 0.0,  0.0,
+    #                             0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.01, 0.0,
+    #                             0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.015]
+
+
+    process_noise_covariance: [0.05, 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0, #changed matrix with more trust on vx ax yaw vyaw with value  0.0015
                                 0.0,  0.05, 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
                                 0.0,  0.0,  0.06, 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
-                                0.0,  0.0,  0.0,  0.03, 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
+                                0.0,  0.0,  0.0,   0.0015, 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
                                 0.0,  0.0,  0.0,  0.0,  0.03, 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
                                 0.0,  0.0,  0.0,  0.0,  0.0,  0.004, 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
                                 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.025, 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
                                 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.025, 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
-                                0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.04, 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
+                                0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,   0.0015, 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
                                 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.01, 0.0,  0.0,  0.0,  0.0,  0.0,
                                 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.01, 0.0,  0.0,  0.0,  0.0,
                                 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0015, 0.0,  0.0,  0.0,
-                                0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.01, 0.0,  0.0,
+                                0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0015, 0.0,  0.0,
                                 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.01, 0.0,
-                                0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.015]
+                                0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.015]                            

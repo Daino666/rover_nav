@@ -12,9 +12,24 @@ cmd_vel_odrive_bridge:
     # contiguous blocks:
     #   0 Front-Left    1 Middle-Left   2 Back-Left
     #   3 Back-Right    4 Middle-Right  5 Front-Right
+    #
+    # Both lists below are written FRONT -> REAR, which is why the right side
+    # reads [5, 4, 3] and not [3, 4, 5]: node ids happen to ascend front-to-rear
+    # on the left and rear-to-front on the right. Do not "tidy" either list into
+    # ascending node-id order -- that contradicts the front->rear convention.
+    # (Order is in fact cosmetic to both consumers: the bridge sends every wheel
+    # on a side the same command, and Odom.py takes a per-side median. It only
+    # affects which axis id gets named in slip-outlier log messages.)
+    #
+    # Independently corroborated 2026-08-26 from accumulated encoder positions
+    # on the live bus: nodes 0/1/2 agreed to within 0.30 rev and 3/4/5 to
+    # within 0.40 rev, with ~12 rev between the groups. Re-check by hand,
+    # without arming any motor, using identify_wheel_axes.py at the workspace
+    # root.
+    #
     # rover_nav/Odom.py takes the same two parameters and must be given the
     # same values, or odometry reads the sides backwards.
-    right_wheels: [3, 4, 5]
+    right_wheels: [5, 4, 3]
     left_wheels: [0, 1, 2]
 
     # Must stay consistent with rover_nav/Odom.py.

@@ -48,7 +48,7 @@ CLOSED_LOOP = 8
 # CAN node id -> physical wheel, re-verified 2026-08-23 by arming one axis at
 # a time and watching which physical wheel moved. Keep in step with
 # right_wheels/left_wheels in aries_drive/config/cmd_vel_odrive_bridge.yaml.
-# right_wheels = [3, 4, 5]   left_wheels = [0, 1, 2]
+# right_wheels = [5, 4, 3]   left_wheels = [0, 1, 2]   (front -> rear)
 AXIS_LABELS = {
     0: "Front-Left  ",
     1: "Middle-Left ",

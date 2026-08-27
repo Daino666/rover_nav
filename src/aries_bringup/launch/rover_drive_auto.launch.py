@@ -49,11 +49,17 @@ def generate_launch_description():
             "imu_baudrate": LaunchConfiguration("imu_baudrate"),
             "imu_frame": LaunchConfiguration("imu_frame"),
             "imu_topic": LaunchConfiguration("imu_topic"),
+            "map_to_odom_x": LaunchConfiguration("map_to_odom_x"),
+            "map_to_odom_y": LaunchConfiguration("map_to_odom_y"),
+            "map_to_odom_yaw_deg": LaunchConfiguration("map_to_odom_yaw_deg"),
         }.items(),
     )
 
     return LaunchDescription(
         [
+            DeclareLaunchArgument("map_to_odom_x", default_value=""),
+            DeclareLaunchArgument("map_to_odom_y", default_value=""),
+            DeclareLaunchArgument("map_to_odom_yaw_deg", default_value=""),
             DeclareLaunchArgument(
                 "rover_hardware_protocol",
                 default_value="auto",

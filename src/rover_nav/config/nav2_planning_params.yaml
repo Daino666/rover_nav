@@ -12,6 +12,18 @@ global_costmap:
       global_frame: map
       robot_base_frame: base_footprint
       resolution: 0.1
+      # Collision footprint the planner checks against. Undeclared, this
+      # defaults to nav2's 0.1 m -- a 20 cm rover -- which SmacPlanner2D got
+      # away with but Hybrid-A* must not, since its whole value here is that
+      # the poses it returns are actually drivable.
+      # The rover is ~0.8 x 0.83 m, so a true half-width of ~0.41 m. The
+      # occupancy grid bakes in 0.10 m of inflation (INFLATE_RADIUS_M in
+      # generate_occupancy_grid.py), so this covers the rest: 0.10 + 0.30 =
+      # 0.40 m, near enough the real half-width. Keeping most of the margin
+      # here rather than in the PGM means it is one explicit, tunable number
+      # the planner checks a footprint against, instead of being baked
+      # irreversibly into the map image.
+      robot_radius: 0.30
       track_unknown_space: false
       always_send_full_costmap: true
       rolling_window: false
@@ -41,15 +53,83 @@ planner_server:
     use_sim_time: false
     planner_plugins: ["GridBased"]
     GridBased:
-      plugin: "nav2_smac_planner::SmacPlanner2D"
+      # Hybrid-A* rather than SmacPlanner2D. SmacPlanner2D searches an
+      # 8-connected grid, so its output is built out of 45/90-degree corners
+      # and has no notion of curvature at all -- a smoother can round those
+      # corners afterwards but cannot bound how tight they get. Hybrid-A*
+      # searches over kinematically feasible motion primitives instead, so
+      # minimum_turning_radius below is enforced *during* the search and
+      # every pose on the returned path already respects it.
+      plugin: "nav2_smac_planner::SmacPlannerHybrid"
       tolerance: 0.25
       downsample_costmap: false
       allow_unknown: false
       max_iterations: 1000000
       max_on_approach_iterations: 1000
       max_planning_time: 5.0
-      cost_travel_multiplier: 2.0
-      use_final_approach_orientation: false
+
+      # The curvature bound. 1.5 m, not the 2.0 m of MIN_SAFE_RADIUS in
+      # scripts/test_paths/generate_test_paths.py.
+      #
+      # 2.0 m is where this rocker-bogie stops scrubbing its wheels against
+      # each other's arcs -- a wear/slip threshold, not a mechanical limit
+      # (a skid-steer can pivot on the spot). Measured against this yard, 2.0 m
+      # is simply wider than the terrain allows: of the nine W markers only W2
+      # and W4 have 2 m of clearance anywhere within 3 m, so at 2.0 m the
+      # planner can only pass through the rest in a near-straight line. That
+      # makes whole routes unplannable for want of a turn -- W6 in particular
+      # must be entered heading west and left heading east, which no 2.0 m arc
+      # can do, so it cannot sit between two other waypoints or close a loop
+      # back to S1.
+      #
+      # 1.5 m still bounds curvature at 0.667 1/m -- against the 17.31 1/m
+      # (a 6 cm radius) the old SmacPlanner2D emitted, that is the same order
+      # of improvement -- while opening the corridors the yard actually has.
+      # The cost is more wheel scrub on the tightest arcs.
+      minimum_turning_radius: 1.5
+
+      # DUBIN = forward-only primitives. The rover drives at a constant
+      # positive base_velocity and pure pursuit has no reverse gear, so
+      # REEDS_SHEPP paths (which use backing-up manoeuvres) would produce
+      # plans the follower physically cannot execute.
+      motion_model_for_search: "DUBIN"
+      angle_quantization_bins: 72          # 5-degree heading resolution
+
+      # Penalties. non_straight_penalty is the "prefer straight" knob: every
+      # turning primitive costs this multiple of a straight one, so the
+      # planner spends curvature only where it buys a genuinely shorter
+      # route. change_penalty additionally discourages switching turn
+      # direction, which is what removes S-wiggles down open corridors.
+      non_straight_penalty: 1.35
+      change_penalty: 0.15
+      cost_penalty: 2.0                    # bias away from inflated cells
+      retrospective_penalty: 0.015
+
+      # Analytic (Dubins) expansion: once the search gets near the goal it
+      # tries to connect analytically, which is what produces the long clean
+      # closing arc instead of a stack of small primitives.
+      analytic_expansion_ratio: 3.5
+      analytic_expansion_max_length: 3.0
+
+      lookup_table_size: 20.0
+      cache_obstacle_heuristic: false
+
+      # Hybrid-A*'s own smoother is deliberately OFF. It is a plain
+      # gradient-descent smoother with no curvature term, so it pulls the
+      # path locally tighter than the search guaranteed: measured over the
+      # S1-S3-S4-S5-S1 tour it produced two poses at a 1.32 m radius, inside
+      # the 2.0 m the search had honoured everywhere. Off, the path is pure
+      # Dubins arcs and straight segments -- already smooth by construction --
+      # and the radius bound holds exactly (max curvature 0.500 1/m, zero
+      # violations) for 0.7 m more length over an 82 m tour.
+      smooth_path: false
+      smoother:
+        max_iterations: 1000
+        w_smooth: 0.3
+        w_data: 0.2
+        tolerance: 1.0e-10
+        do_refinement: true
+        refinement_num: 2
 
 smoother_server:
   ros__parameters:

@@ -19,6 +19,7 @@ from launch.actions import DeclareLaunchArgument
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
 
 
@@ -43,7 +44,13 @@ def generate_launch_description():
         executable='publish_test_path.py',
         name='publish_test_path',
         output='screen',
-        parameters=[{'test_path': LaunchConfiguration('test_path')}],
+        # value_type=str is load-bearing, not boilerplate: without it the
+        # parameter is type-inferred, and ROS's number parser accepts
+        # "infinity" as the float inf (C strtod), so test_path:=infinity
+        # would come through as a double and fail the STRING declaration.
+        parameters=[{
+            'test_path': ParameterValue(LaunchConfiguration('test_path'), value_type=str),
+        }],
     )
 
     rviz_node = Node(

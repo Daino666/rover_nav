@@ -107,7 +107,7 @@ class CmdVelOdriveBridge(Node):
         # defaults track it so running this node bare is not silently wrong.
         # Re-verified 2026-08-23 by arming each axis individually and watching
         # which physical wheel moved.
-        self.declare_parameter("right_wheels", [3, 4, 5])
+        self.declare_parameter("right_wheels", [5, 4, 3])
         self.declare_parameter("left_wheels", [0, 1, 2])
         self.declare_parameter("wheel_circumference_m", 0.697)
         self.declare_parameter("track_width_m", 0.566)

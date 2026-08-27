@@ -47,7 +47,7 @@ datasets and runs belong in `data/`.
 - `aries_moveit`: MoveIt 2 configuration, arm/gripper controllers, Servo teleop, and gripper hardware plugins.
 - `aries_vision_grasp`: camera tools, YOLO inference, and autonomous MoveIt grasping of the probe.
 - `aries_soil_sample`: autonomous soil scooping from the ground with the bucket fingertip, and deposit into the rover box. Terrain geometry only, no trained model.
-- `rover_nav`: rover odometry, localization configs, and legacy rover navigation/control scripts.
+- `rover_nav`: rover odometry, localization configs, waypoint/path following, and legacy rover navigation/control scripts. Also carries the five real-world path-tracking test courses (`straight_line`, `lane_change`, `circle`, `circle_transition`, `infinity`) — see [Real-world path-tracking tests](src/rover_nav/README.md#real-world-path-tracking-tests) for the field procedure.
 
 Vendored packages live under `src/vendor/`; colcon discovers packages
 recursively, so this grouping does not change package or launch names.

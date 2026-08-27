@@ -38,6 +38,12 @@ Visualization Manager:
       Line Style: Lines
       Line Width: 0.1
       Enabled: true
+    - Class: rviz_default_plugins/MarkerArray
+      Name: Route waypoints
+      Topic:
+        Value: /global_path/waypoints
+        Durability Policy: Transient Local
+      Enabled: true
     - Class: rviz_default_plugins/TF
       Name: TF
       Show Names: true

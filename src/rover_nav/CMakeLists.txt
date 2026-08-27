@@ -21,6 +21,7 @@ install(
     scripts/rover_controller_pure_pursuit.py
     scripts/publish_global_path.py
     scripts/publish_test_path.py
+    scripts/plan_global_path.py
     scripts/test_path_loader.py
     scripts/test_path_viz.py
     scripts/cmd_vel_arbiter.py

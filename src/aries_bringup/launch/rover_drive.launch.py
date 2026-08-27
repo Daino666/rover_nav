@@ -134,6 +134,19 @@ def generate_launch_description():
         DeclareLaunchArgument("use_cmd_vel_bridge", default_value="true"),
         DeclareLaunchArgument("drive_cmd_vel_topic", default_value="/cmd_vel"),
         DeclareLaunchArgument(
+            "map_to_odom_x", default_value="",
+            description="Override the map->odom x offset (m); empty keeps "
+                        "MAP_TO_ODOM_X from global_path_planner.py"),
+        DeclareLaunchArgument(
+            "map_to_odom_y", default_value="",
+            description="Override the map->odom y offset (m); empty keeps "
+                        "MAP_TO_ODOM_Y from global_path_planner.py"),
+        DeclareLaunchArgument(
+            "map_to_odom_yaw_deg", default_value="",
+            description="Override the map->odom yaw (deg) -- how far the rover's "
+                        "odom frame is rotated within the competition map frame. "
+                        "Empty keeps MAP_TO_ODOM_YAW_DEG from global_path_planner.py"),
+        DeclareLaunchArgument(
             "drive_auto_arm",
             default_value="false",
             description=(
@@ -232,6 +245,14 @@ def generate_launch_description():
                 "imu_port",
                 "imu_frame",
                 "imu_topic",
+                # map -> odom alignment. Without these forwarded, the correction
+                # can only be changed by editing MAP_TO_ODOM_* in
+                # global_path_planner.py and rebuilding -- but it depends on
+                # which way the rover was parked at boot, so it is a per-run
+                # value, not a constant.
+                "map_to_odom_x",
+                "map_to_odom_y",
+                "map_to_odom_yaw_deg",
             ],
         ),
         _include("aries_drive", "drive.launch.py", [
