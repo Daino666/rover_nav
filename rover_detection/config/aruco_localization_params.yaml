@@ -1,0 +1,43 @@
+aruco_localization_node:
+  ros__parameters:
+    # ============================================================
+    # UPDATE THIS ONE RIGHT BEFORE EACH RUN, once you're told which
+    # start line you're on (S1-S9). Published ONCE at node startup
+    # as a seed (landmark_id=-1, marking it as not a real landmark
+    # detection) so downstream localization has something to start
+    # from before the first actual landmark sighting -- it is never
+    # repeated after that, and has no effect on ongoing detections.
+    # ============================================================
+    start_point: S1
+
+    # Assumes a camera already running elsewhere with align_depth.enable:=true
+    # -- this node does not launch the camera itself.
+    color_topic: /camera/camera/color/image_raw
+    depth_topic: /camera/camera/aligned_depth_to_color/image_raw
+    camera_info_topic: /camera/camera/color/camera_info
+
+    # ERC spec nominal marker size is 150mm -- measure your actual
+    # printout, since every reported position scales linearly with this.
+    marker_length_m: 0.150
+    dictionary_name: DICT_5X5_100
+
+    # [-1] = accept any detected ID that's also a known landmark (51-65).
+    # Narrow this once you only want to trust specific markers, e.g.:
+    # id_whitelist: [51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65]
+    id_whitelist: [-1]
+
+    min_valid_depth_samples: 3
+    max_depth_std_m: 0.05
+
+    # Camera mounting offset from the rover chassis base center, rover
+    # body frame (fwd, left, up), meters -- update if the mount changes.
+    camera_offset_x: 0.2608
+    camera_offset_y: 0.00
+    camera_offset_z: 0.2535
+
+    position_topic: /aruco_localization/rover_position_fix
+    # Confirm with the nav team that their EKF's "map" frame shares the
+    # same origin/orientation as the competition survey table.
+    position_frame_id: map
+
+    publish_debug_image: true   # /aruco_localization/debug_image, view with rqt_image_view
