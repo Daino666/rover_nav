@@ -64,8 +64,15 @@ DEPTH_SCALE_MM_TO_M = 0.001
 
 # ERC 2026 Mars Yard landmarks (L1-L15), keyed by ENCODED ArUco ID
 # (= 50 + printed sign number). Global frame: X=right, Y=front, meters.
+#
+# *** TEMPORARY BENCH-TEST OVERRIDE (revert before any real use) ***
+# 51 (L1) and 54 (L4) are set to hand-measured bench positions for the
+# two-marker consistency test, replacing their real competition survey
+# values below. Original values, for revert:
+#   51: (3.183, 8.012)
+#   54: (9.225, 22.389)
 LANDMARKS_XY = {
-    51: (3.183, 8.012), 52: (7.269, 9.482), 53: (7.878, 17.583), 54: (9.225, 22.389),
+    51: (1.10, 2.44), 52: (7.269, 9.482), 53: (7.878, 17.583), 54: (0.71, 2.44),
     55: (3.518, 23.990), 56: (0.882, 16.870), 57: (-3.944, 21.415), 58: (-5.491, 16.334),
     59: (-7.695, 13.528), 60: (-1.610, 12.602), 61: (-7.715, 9.721), 62: (-4.311, 4.442),
     63: (-5.720, 28.118), 64: (-11.438, 5.230), 65: (6.483, 1.102),
