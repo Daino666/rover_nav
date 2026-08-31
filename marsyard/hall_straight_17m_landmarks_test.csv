@@ -1,0 +1,4 @@
+name,trigger_s,trigger_x,trigger_y,landmark_id,error_x,error_y
+inj_A,3.0,0.0000,3.0000,81,0.3000,0.0000
+inj_B,8.0,0.0000,8.0000,82,-0.7000,0.0000
+inj_C,13.0,0.0000,13.0000,83,0.5000,0.0000
