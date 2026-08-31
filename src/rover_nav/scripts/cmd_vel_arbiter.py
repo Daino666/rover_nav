@@ -163,6 +163,39 @@ def calc_curvature(local_x, local_y):
     return (2.0 * local_y) / (ld ** 2)
 
 
+def path_curvature_ahead(route, idx, sample_gap_m):
+    """Menger curvature (1/m) of `route` just ahead of `idx` -- same formula
+    plan_global_path.py's curvature_profile() uses, but sampled live off
+    three points spaced ~sample_gap_m apart in arc length, starting AT idx
+    and walking forward. Deliberately anticipatory (samples the stretch the
+    rover is about to enter, not the one it's already on): the point of this
+    is to shorten the lookahead BEFORE a corner, not react once already
+    cutting it. Arc-length stepping rather than a fixed index stride so this
+    works the same regardless of a given path CSV's point spacing.
+
+    Returns 0.0 (== "straight, no cap needed") if the route doesn't have
+    enough points left ahead of idx to sample three."""
+    pts = [route[idx]]
+    i = idx
+    for _ in range(2):
+        acc = 0.0
+        j = i
+        while j + 1 < len(route) and acc < sample_gap_m:
+            acc += distance(route[j], route[j + 1])
+            j += 1
+        if j == i:
+            return 0.0
+        pts.append(route[j])
+        i = j
+
+    a, b, c = pts
+    ab, bc, ca = distance(a, b), distance(b, c), distance(c, a)
+    if min(ab, bc, ca) < 1e-9:
+        return 0.0
+    cross = abs((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]))
+    return cross / (ab * bc * ca) * 2.0
+
+
 class CmdVelArbiter(Node):
     def __init__(self):
         super().__init__("cmd_vel_arbiter")
@@ -248,10 +281,53 @@ class CmdVelArbiter(Node):
         # so nothing here can see that it is cutting into an inflated obstacle.
         # Bounding L_max bounds how far off the planned, collision-checked path
         # the rover can stray while correcting.
+        #
+        # The error term alone has a feedback problem on curved sections: a
+        # long lookahead cuts a corner, cutting the corner IS cross-track
+        # error, and the error term responds to that error by growing the
+        # lookahead further -- cutting the corner harder. So the error term is
+        # capped by a second, independent term driven by the path's own
+        # upcoming curvature (path_curvature_ahead(), same Menger-curvature
+        # formula plan_global_path.py already uses), which shortens the
+        # lookahead approaching a turn regardless of how much error has built
+        # up. Final lookahead = min(error term, curvature cap), both already
+        # clamped to [lookahead_min, lookahead_max] -- so on a straight the
+        # curvature cap sits at lookahead_max and stays out of the way, and
+        # entering a turn it pulls the ceiling down toward lookahead_min.
         self.declare_parameter("lookahead_dynamic", True)
-        self.declare_parameter("lookahead_min", 0.5)
-        self.declare_parameter("lookahead_max", 1.0)
+        # This rover drives these paths at base_velocity ~0.2 m/s -- slow
+        # enough that a long lookahead buys nothing in loop-stability margin,
+        # it only costs tracking accuracy (a longer lookahead is a wider
+        # corner-cut and a slower-to-correct cross-track error). 0.4 m stays
+        # safely above the route CSVs' own point spacing (~0.23 m on
+        # loop4_rot270.csv) so lookahead target selection doesn't get jumpy
+        # at the floor.
+        self.declare_parameter("lookahead_min", 0.4)
+        self.declare_parameter("lookahead_max", 0.7)
         self.declare_parameter("lookahead_error_gain", 1.0)
+        # curvature_cap = clamp(lookahead_min, lookahead_max,
+        #                        lookahead_curvature_gain / kappa_ahead).
+        # Calibrated against MIN_TURNING_RADIUS in plan_global_path.py (1.5 m,
+        # i.e. kappa 0.667 1/m) -- what the Hybrid-A* planned paths this
+        # follower actually drives top out at -- NOT this node's own
+        # max_curvature (2.0 1/m / 0.5 m radius), which is a control-loop
+        # safety clamp the planned paths never approach. Confirmed against
+        # marsyard/loop4_rot270.csv's real curvature profile (max 0.672 1/m):
+        # gain=1.0 (tuned to max_curvature) never engaged the cap anywhere on
+        # that route at all. lookahead_min * 0.667 = 0.4 * 0.667 = 0.267 puts
+        # the cap at exactly lookahead_min at that path's tightest curvature;
+        # sampled along the same route this lands the cap at lookahead_max
+        # ~67% of the way (straights), lookahead_min ~11% (the tightest
+        # turns), smoothly in between elsewhere. Retune (same formula:
+        # lookahead_min * 0.667) if lookahead_min itself changes again, or if
+        # max_curvature/MIN_TURNING_RADIUS change.
+        self.declare_parameter("lookahead_curvature_gain", 0.267)
+        # How far ahead (arc length along the route, metres) to sample
+        # curvature from -- anticipatory, not reactive. Set to lookahead_max's
+        # default: the region a full-length lookahead arc would actually try
+        # to cut through, so the cap has already dropped by the time the
+        # rover would otherwise start cutting the corner.
+        self.declare_parameter("lookahead_curvature_sample_m", 0.7)
         self.declare_parameter("path_csv", "")
         self.declare_parameter("path_frame", "map")
         self.declare_parameter("waypoints_csv", "")
@@ -296,6 +372,10 @@ class CmdVelArbiter(Node):
         self.lookahead_min = float(self.get_parameter("lookahead_min").value)
         self.lookahead_max = float(self.get_parameter("lookahead_max").value)
         self.lookahead_error_gain = float(self.get_parameter("lookahead_error_gain").value)
+        self.lookahead_curvature_gain = float(
+            self.get_parameter("lookahead_curvature_gain").value)
+        self.lookahead_curvature_sample_m = float(
+            self.get_parameter("lookahead_curvature_sample_m").value)
         self.route_goal = None   # true final point, before the run-out
         self.goal_armed = False  # see the goal test in _drive_test_path
         self.path_csv = str(self.get_parameter("path_csv").value).strip()
@@ -922,18 +1002,31 @@ class CmdVelArbiter(Node):
             self._advance_global_idx()
         err = self._record_tracking_error()
 
+        chase = self.local_route if detouring else self.route
+        idx = self.local_idx if detouring else self.route_idx
+
         # Widen the lookahead in proportion to how far off the path we are, so
         # a large correction is asked for gently rather than at the curvature
         # clamp. Uses the cross-track error measured this tick, so it responds
-        # to a pose snap immediately and relaxes as the rover converges.
+        # to a pose snap immediately and relaxes as the rover converges. Capped
+        # by a second, independent term driven by the path's own upcoming
+        # curvature -- see the lookahead_curvature_gain declaration above for
+        # why the error term alone isn't enough.
         if self.lookahead_dynamic:
-            self.lookahead_distance = min(
+            error_term = min(
                 self.lookahead_max,
                 max(self.lookahead_min,
                     self.lookahead_min + self.lookahead_error_gain * err))
 
-        chase = self.local_route if detouring else self.route
-        idx = self.local_idx if detouring else self.route_idx
+            kappa_ahead = path_curvature_ahead(chase, idx, self.lookahead_curvature_sample_m)
+            curvature_cap = self.lookahead_max
+            if kappa_ahead > 1e-6:
+                curvature_cap = min(
+                    self.lookahead_max,
+                    max(self.lookahead_min, self.lookahead_curvature_gain / kappa_ahead))
+
+            self.lookahead_distance = min(error_term, curvature_cap)
+
         # A detour ends at its rejoin point, not at the goal. Only the route
         # whose end IS the global goal may declare the run complete.
         can_finish = (not detouring) or distance(chase[-1], self.route[-1]) < 0.1

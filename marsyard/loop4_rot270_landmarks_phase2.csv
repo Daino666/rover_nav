@@ -1,0 +1,4 @@
+name,trigger_s,trigger_x,trigger_y,landmark_id,error_x,error_y
+inj_A_straight,19.87,6.7402,4.5318,71,0.2298,-0.1928
+inj_B_preturn,43.39,17.4247,-3.9148,72,0.0000,-0.7000
+inj_C_straight,63.09,12.1918,3.3775,73,0.3214,-0.3830
