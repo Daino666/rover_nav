@@ -1,0 +1,409 @@
+#!/usr/bin/env bash
+#
+# obstest — camera-only obstacle-detection test rig.
+#
+# Brings up the D435i and the detection chain and nothing else: no arm, no
+# MoveIt, no drive, no nav2. Every stage is a plain `ros2 run`, so the chain
+# can be retuned without touching (or rebuilding) a launch file.
+#
+#   cloud → range gate (z) → ground cut (y) → SOR → pcl_obstacle_detector
+#
+# Run `obstest help` for the command list.
+
+set -uo pipefail
+
+# ── defaults ─────────────────────────────────────────────────────────────────
+WS="${WS:-$HOME/jazzy_ws}"
+CLOUD_TOPIC="/camera/camera/depth/color/points"
+PROFILE="640x480x15"          # the driver defaults to 848x480x30 + 1280x720x30,
+                              # ~400k pts/frame into a Python detector
+RANGE_MIN=0.1
+RANGE_MAX=2.0
+CAMERA_HEIGHT=0.489           # measured on the rover from a live plane fit
+GROUND_MARGIN=0.05            # keep points this far above the ground surface
+GROUND=1                      # y-cut ground removal on by default
+MEAN_K=10                     # SOR: 50/1.0 eats sparse far returns
+STDDEV=1.5
+DETECTOR=""                   # empty → installed rover_nav executable
+PUBLISH_TF=""                 # empty → decided per command
+BAG_DIR="${OBSTEST_BAGS:-$HOME/obst_takes}"
+RVIZ=0
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+PIDS=()
+
+# ── plumbing ─────────────────────────────────────────────────────────────────
+c_red()  { printf '\033[31m%s\033[0m\n' "$*"; }
+c_grn()  { printf '\033[32m%s\033[0m\n' "$*"; }
+c_dim()  { printf '\033[2m%s\033[0m\n' "$*"; }
+info()   { printf '\033[36m==>\033[0m %s\n' "$*"; }
+die()    { c_red "obstest: $*" >&2; exit 1; }
+
+source_ros() {
+  # colcon's generated setup scripts reference unset variables; -u would abort
+  # sourcing part-way through and leave a half-built environment.
+  set +u
+  if [[ -z "${ROS_DISTRO:-}" ]]; then
+    # shellcheck disable=SC1091
+    source /opt/ros/jazzy/setup.bash || die "cannot source /opt/ros/jazzy"
+  fi
+  if [[ -f "$WS/install/setup.bash" ]]; then
+    # shellcheck disable=SC1091
+    source "$WS/install/setup.bash"
+  else
+    set -u; die "no workspace overlay at $WS/install/setup.bash"
+  fi
+  set -u
+}
+
+track() { PIDS+=("$1"); }
+
+cleanup() {
+  trap - INT TERM EXIT
+  [[ ${#PIDS[@]} -eq 0 ]] && exit 0
+  info "shutting down"
+  for p in "${PIDS[@]}"; do kill -INT "$p" 2>/dev/null; done
+  for _ in $(seq 20); do
+    local alive=0
+    for p in "${PIDS[@]}"; do kill -0 "$p" 2>/dev/null && alive=1; done
+    [[ $alive -eq 0 ]] && break
+    sleep 0.25
+  done
+  for p in "${PIDS[@]}"; do kill -KILL "$p" 2>/dev/null; done
+  wait 2>/dev/null
+  exit 0
+}
+
+# ── stages ───────────────────────────────────────────────────────────────────
+start_camera() {
+  local tf="${PUBLISH_TF:-true}"
+  info "camera  $PROFILE  publish_tf=$tf"
+  ros2 launch realsense2_camera rs_launch.py \
+    pointcloud.enable:=true \
+    depth_module.depth_profile:="$PROFILE" \
+    rgb_camera.color_profile:="$PROFILE" \
+    align_depth.enable:=true \
+    enable_gyro:=false enable_accel:=false \
+    enable_infra1:=false enable_infra2:=false \
+    publish_tf:="$tf" &
+  track $!
+}
+
+start_filters() {
+  local src="$CLOUD_TOPIC" out="/pcl/front"
+
+  info "range   z ∈ [$RANGE_MIN, $RANGE_MAX] m   $src → /pcl/front"
+  ros2 run pcl_ros filter_passthrough_node --ros-args -r __node:=range_filter \
+    -r input:="$src" -r output:=/pcl/front \
+    -p "filter_field_name:='z'" \
+    -p filter_limit_min:="$RANGE_MIN" -p filter_limit_max:="$RANGE_MAX" \
+    >/dev/null 2>&1 &
+  track $!
+
+  if [[ $GROUND -eq 1 ]]; then
+    # Optical frame: +X right, +Y DOWN, +Z forward. The camera is level
+    # (rpy 0 0 0 on base_link), so the ground sits at a constant y ≈ camera
+    # height regardless of range, and a fixed y cut removes it deterministically
+    # — unlike segment_plane(), which removes whichever plane is dominant and
+    # indoors will happily pick a wall.
+    local y_max
+    y_max=$(awk -v h="$CAMERA_HEIGHT" -v m="$GROUND_MARGIN" 'BEGIN{printf "%.3f", h-m}')
+    info "ground  y < $y_max m  (camera $CAMERA_HEIGHT − margin $GROUND_MARGIN)   /pcl/front → /pcl/noground"
+    ros2 run pcl_ros filter_passthrough_node --ros-args -r __node:=ground_filter \
+      -r input:=/pcl/front -r output:=/pcl/noground \
+      -p "filter_field_name:='y'" \
+      -p filter_limit_min:=-2.0 -p filter_limit_max:="$y_max" \
+      >/dev/null 2>&1 &
+    track $!
+    out="/pcl/noground"
+  else
+    c_dim "    ground cut disabled — detector must remove the ground itself"
+  fi
+
+  info "sor     mean_k=$MEAN_K stddev=$STDDEV   $out → /pcl/denoised"
+  ros2 run pcl_ros filter_statistical_outlier_removal_node --ros-args -r __node:=sor_filter \
+    -r input:="$out" -r output:=/pcl/denoised \
+    -p mean_k:="$MEAN_K" -p stddev:="$STDDEV" \
+    >/dev/null 2>&1 &
+  track $!
+}
+
+start_detector() {
+  if [[ -n "$DETECTOR" ]]; then
+    [[ -f "$DETECTOR" ]] || die "no such detector script: $DETECTOR"
+    info "detect  $DETECTOR"
+    python3 "$DETECTOR" &
+  else
+    info "detect  rover_nav/pcl_obstacle_detector.py (installed)"
+    ros2 run rover_nav pcl_obstacle_detector.py &
+  fi
+  track $!
+}
+
+start_rviz() {
+  local cfg="$SELF_DIR/obstest.rviz"
+  [[ -f "$cfg" ]] || die "missing rviz config: $cfg"
+  info "rviz    $cfg"
+  rviz2 -d "$cfg" >/dev/null 2>&1 &
+  track $!
+}
+
+start_monitor() {
+  local mon="$SELF_DIR/obstest_monitor.py"
+  [[ -f "$mon" ]] || die "missing monitor: $mon"
+  python3 "$mon" --cloud "$CLOUD_TOPIC" "$@" &
+  track $!
+}
+
+# ── commands ─────────────────────────────────────────────────────────────────
+cmd_live() {
+  trap cleanup INT TERM EXIT
+  start_camera
+  sleep 4                       # let the driver claim the device first
+  start_filters
+  start_detector
+  [[ $RVIZ -eq 1 ]] && start_rviz
+  sleep 2
+  start_monitor
+  c_grn "running — Ctrl-C to stop"
+  wait
+}
+
+cmd_camera() {
+  trap cleanup INT TERM EXIT
+  start_camera
+  c_grn "camera only — Ctrl-C to stop"
+  wait
+}
+
+cmd_nodes() {
+  # Detection chain against a cloud that already exists: a bag, or a bringup
+  # that owns the camera. Starts no driver.
+  trap cleanup INT TERM EXIT
+  start_filters
+  start_detector
+  [[ $RVIZ -eq 1 ]] && start_rviz
+  sleep 2
+  start_monitor
+  c_grn "detection nodes on $CLOUD_TOPIC — Ctrl-C to stop"
+  wait
+}
+
+cmd_record() {
+  local name="${1:-take}" dur="${2:-20}"
+  mkdir -p "$BAG_DIR"
+  local out="$BAG_DIR/$name"
+  [[ -e "$out" ]] && die "$out already exists — pick another name"
+  trap cleanup INT TERM EXIT
+  start_camera
+  sleep 5
+  info "recording ${dur}s → $out"
+  c_dim "    the raw cloud runs up to ~150 MB/s; zstd file compression on"
+  ros2 bag record -o "$out" --compression-mode file --compression-format zstd \
+    "$CLOUD_TOPIC" /tf_static /camera/camera/depth/camera_info &
+  local bag=$!
+  track $bag
+  sleep "$dur"
+  kill -INT $bag 2>/dev/null
+  wait $bag 2>/dev/null
+  c_grn "recorded $out"
+  cleanup
+}
+
+cmd_replay() {
+  local bag="${1:-}"
+  [[ -n "$bag" ]] || die "usage: obstest replay <bag>"
+  [[ -d "$bag" ]] || bag="$BAG_DIR/$bag"
+  [[ -d "$bag" ]] || die "no such bag: $bag"
+  trap cleanup INT TERM EXIT
+  start_filters
+  start_detector
+  [[ $RVIZ -eq 1 ]] && start_rviz
+  sleep 2
+  start_monitor --stats
+  info "replaying $bag (looping)"
+  c_dim "    the detector is stateless per frame, so a bag gives identical input"
+  c_dim "    on every pass — the only way to compare two parameter sets fairly"
+  ros2 bag play --loop "$bag" &
+  track $!
+  c_grn "running — Ctrl-C to stop"
+  wait
+}
+
+cmd_watch() {
+  trap cleanup INT TERM EXIT
+  start_monitor "$@"
+  wait
+}
+
+cmd_check() {
+  local ok=1
+  echo
+  printf '  %-34s %s\n' "TOPIC" "RATE (5 s window)"
+  printf '  %-34s %s\n' "----------------------------------" "-----------------"
+  for t in "$CLOUD_TOPIC" /pcl/front /pcl/noground /pcl/denoised /obstacles/markers /obstacle_detected; do
+    if ! ros2 topic list 2>/dev/null | grep -qx "$t"; then
+      printf '  %-34s \033[31m%s\033[0m\n' "$t" "absent"
+      [[ "$t" == "$CLOUD_TOPIC" ]] && ok=0
+      continue
+    fi
+    local hz
+    hz=$(timeout 6 ros2 topic hz "$t" --window 10 2>/dev/null \
+          | grep -m1 'average rate' | awk '{printf "%.1f Hz", $3}')
+    if [[ -z "$hz" ]]; then
+      printf '  %-34s \033[31m%s\033[0m\n' "$t" "no messages"
+      ok=0
+    else
+      printf '  %-34s \033[32m%s\033[0m\n' "$t" "$hz"
+    fi
+  done
+  echo
+  info "frames"
+  ros2 run tf2_ros tf2_echo camera_link camera_depth_optical_frame 2>/dev/null &
+  local tfpid=$!
+  sleep 3; kill $tfpid 2>/dev/null
+  echo
+  info "detector parameters"
+  ros2 param list /obstacle_detector 2>/dev/null | sed 's/^/    /' | grep -v use_sim_time \
+    || c_dim "    detector not running, or it exposes no parameters (legacy build:"
+  echo
+  [[ $ok -eq 1 ]] && c_grn "pipeline looks alive" || c_red "pipeline has gaps — see above"
+}
+
+cmd_params() {
+  for n in /range_filter /ground_filter /sor_filter /obstacle_detector; do
+    ros2 node list 2>/dev/null | grep -qx "$n" || continue
+    echo
+    c_grn "$n"
+    while read -r p; do
+      [[ "$p" == "use_sim_time" ]] && continue
+      printf '    %-24s %s\n' "$p" "$(ros2 param get "$n" "$p" 2>/dev/null | sed 's/.*value is: //')"
+    done < <(ros2 param list "$n" 2>/dev/null | sed 's/^ *//')
+  done
+  echo
+}
+
+cmd_set() {
+  [[ $# -ge 2 ]] || die "usage: obstest set <node> <param> <value>   (node: range|ground|sor|detector)"
+  local node
+  case "$1" in
+    range)    node=/range_filter ;;
+    ground)   node=/ground_filter ;;
+    sor)      node=/sor_filter ;;
+    detector) node=/obstacle_detector ;;
+    /*)       node="$1" ;;
+    *)        die "unknown node '$1' — use range|ground|sor|detector" ;;
+  esac
+  shift
+  local param="$1" value="$2"
+  # YAML 1.1 treats y/n/yes/no/on/off as booleans, so a bare field name like
+  # `y` is rejected as the wrong type. Quote string values through.
+  if [[ "$param" == "filter_field_name" ]]; then value="'${value//\'/}'"; fi
+  ros2 param set "$node" "$param" "$value"
+}
+
+cmd_rviz() {
+  trap cleanup INT TERM EXIT
+  start_rviz
+  wait
+}
+
+cmd_help() {
+  cat <<'EOF'
+
+obstest — camera-only obstacle-detection test rig
+
+  Brings up the D435i and the detection chain and nothing else:
+  no arm, no MoveIt, no drive, no nav2.
+
+    cloud → range gate (z) → ground cut (y) → SOR → pcl_obstacle_detector
+            /pcl/front       /pcl/noground    /pcl/denoised
+                                              → /obstacles/markers
+                                              → /obstacle_detected
+
+COMMANDS
+  live                     camera + full chain + live readout      [the usual one]
+  camera                   camera driver only (bench check)
+  nodes                    chain only, no driver — for a bag or an existing bringup
+  record <name> [secs]     camera + record a scenario bag (default 20 s)
+  replay <bag>             chain over a looping bag, with pass/fail stats
+  watch [--stats]          attach a readout to an already-running chain
+  check                    topic-by-topic rate check of the whole chain
+  params                   dump every live parameter in the chain
+  set <node> <p> <v>       range|ground|sor|detector — retune without restarting
+  rviz                     RViz preset (fixed frame = camera_depth_optical_frame)
+
+OPTIONS
+  --profile WxHxF          depth+color profile          (default 640x480x15)
+  --range MIN MAX          forward gate, metres         (default 0.1 2.0)
+  --camera-height M        optical centre above ground  (default 0.489, measured)
+  --ground-margin M        keep points this far up      (default 0.05)
+  --no-ground              skip the y cut (use when the detector cuts ground itself)
+  --sor K STDDEV           outlier removal              (default 10 1.5)
+  --detector PATH          run this .py instead of the installed executable
+  --cloud TOPIC            source cloud     (default /camera/camera/depth/color/points)
+  --publish-tf true|false  driver TF        (default true; false alongside any bringup)
+  --rviz                   also open RViz
+  --bags DIR               bag directory                (default ~/obst_takes)
+
+EXAMPLES
+  obstest live --rviz
+  obstest live --detector ~/jazzy_ws/pcl_obstacle_detector_RECOVERED.py --no-ground
+  obstest record empty_ground 20
+  obstest replay empty_ground --rviz
+  obstest set sor mean_k 20
+  obstest nodes --cloud /camera/depth/color/points --publish-tf false
+
+NOTES
+  · Two realsense2_camera drivers cannot share one D435i — the loser exits
+    *after* locking the device. Use `nodes` when a bringup already owns it.
+  · `--publish-tf false` whenever robot_state_publisher is running, or two
+    publishers fight over the same TF edges.
+  · Tune in this order: ground cut until /pcl/denoised shows no floor, then
+    the detector's cluster radius, then its minimum cluster size against an
+    empty_ground bag. Doing it out of order drives the radius far too low.
+  · A corridor is a misleading test bed: walls at 1–1.5 m are correctly
+    obstacles indoors and absent on the yard. Validate outdoors.
+
+EOF
+}
+
+# ── argument parsing ─────────────────────────────────────────────────────────
+[[ $# -eq 0 ]] && { cmd_help; exit 0; }
+CMD="$1"; shift
+
+POSITIONAL=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --profile)        PROFILE="$2"; shift 2 ;;
+    --range)          RANGE_MIN="$2"; RANGE_MAX="$3"; shift 3 ;;
+    --camera-height)  CAMERA_HEIGHT="$2"; shift 2 ;;
+    --ground-margin)  GROUND_MARGIN="$2"; shift 2 ;;
+    --no-ground)      GROUND=0; shift ;;
+    --sor)            MEAN_K="$2"; STDDEV="$3"; shift 3 ;;
+    --detector)       DETECTOR="$2"; shift 2 ;;
+    --cloud)          CLOUD_TOPIC="$2"; shift 2 ;;
+    --publish-tf)     PUBLISH_TF="$2"; shift 2 ;;
+    --rviz)           RVIZ=1; shift ;;
+    --bags)           BAG_DIR="$2"; shift 2 ;;
+    --stats)          POSITIONAL+=("--stats"); shift ;;
+    -h|--help)        cmd_help; exit 0 ;;
+    *)                POSITIONAL+=("$1"); shift ;;
+  esac
+done
+set -- "${POSITIONAL[@]+"${POSITIONAL[@]}"}"
+
+case "$CMD" in
+  live)    source_ros; cmd_live ;;
+  camera)  source_ros; cmd_camera ;;
+  nodes)   source_ros; cmd_nodes ;;
+  record)  source_ros; cmd_record "$@" ;;
+  replay)  source_ros; cmd_replay "$@" ;;
+  watch)   source_ros; cmd_watch "$@" ;;
+  check)   source_ros; cmd_check ;;
+  params)  source_ros; cmd_params ;;
+  set)     source_ros; cmd_set "$@" ;;
+  rviz)    source_ros; cmd_rviz ;;
+  help|-h|--help) cmd_help ;;
+  *)       die "unknown command '$CMD' — try: obstest help" ;;
+esac

@@ -22,14 +22,26 @@ node) should simply not receive an update that cycle -- publishing a
 guessed position as if it were a real measurement would be actively
 misleading to whatever's fusing it.
 
-HEADING comes from /odometry/filtered (the nav stack's own fused yaw), read
-at the moment of each sighting to rotate the camera-relative (forward, left)
-offset into the global frame -- this node does not estimate yaw itself (a
-single sighting of these poles is orientation-ambiguous, see below), it only
-consumes an already-trusted external one. No fix is published for any frame
-where no odometry has been received yet -- placing a position without a
-heading to rotate it by would silently produce a wrong-but-plausible-looking
-answer rather than no answer.
+HEADING is looked up from TF as map -> base_frame at the moment of each
+sighting, and used to rotate the camera-relative (forward, left) offset into
+the global frame. This node does not estimate yaw itself (a single sighting
+of these poles is orientation-ambiguous, see below), it only consumes an
+already-trusted external one.
+
+It must be TF, not /odometry/filtered directly: that topic's yaw is measured
+in the ODOM frame, and odom is not generally aligned with the competition map
+frame -- rover_nav's MAP_TO_ODOM_YAW_DEG carries the difference and is
+re-measured for each run from how the rover is actually parked (90 when its
+nose is along map +Y, but 70 or 120 or anything else if it is parked
+differently). Feeding odom yaw in as though it were global yaw rotates every
+fix about its landmark by exactly that angle -- an error of
+2*sin(offset/2)*range, i.e. 4.2 m at the 3 m range cap for a 90 degree
+mismatch. Reading map -> base_frame instead is correct for any value, with no
+coupling to how the alignment happens to be configured.
+
+No fix is published for any frame where that transform is unavailable --
+placing a position without a heading to rotate it by would silently produce a
+wrong-but-plausible-looking answer rather than no answer.
 
 NO COVARIANCE: there's no real uncertainty estimate behind this fix; don't
 fabricate one to force this into PoseWithCovarianceStamped for an EKF
@@ -47,12 +59,13 @@ import math
 import cv2
 import numpy as np
 import rclpy
+import tf2_ros
 from cv_bridge import CvBridge
 from geometry_msgs.msg import Point
 from message_filters import ApproximateTimeSynchronizer, Subscriber
-from nav_msgs.msg import Odometry
 from rcl_interfaces.msg import ParameterDescriptor, ParameterType
 from rclpy.node import Node
+from rclpy.duration import Duration
 from rclpy.qos import qos_profile_sensor_data
 from rover_perception_msgs.msg import RoverPositionFix
 from sensor_msgs.msg import CameraInfo, Image
@@ -65,14 +78,32 @@ DEPTH_SCALE_MM_TO_M = 0.001
 # ERC 2026 Mars Yard landmarks (L1-L15), keyed by ENCODED ArUco ID
 # (= 50 + printed sign number). Global frame: X=right, Y=front, meters.
 #
-# *** TEMPORARY BENCH-TEST OVERRIDE (revert before any real use) ***
-# 51 (L1) and 54 (L4) are set to hand-measured bench positions for the
-# two-marker consistency test, replacing their real competition survey
-# values below. Original values, for revert:
+# *** TEMPORARY TEST OVERRIDE (revert before any real use) ***
+# 51 (L1) is set for the hall lane-change test, replacing its real competition
+# survey value. Everything else, 54 (L4) included, holds its real surveyed
+# value. Original value of 51, for revert:
 #   51: (3.183, 8.012)
-#   54: (9.225, 22.389)
+#
+# The value below is NOT where the marker physically is -- it is deliberately
+# offset so the rover concludes it has drifted, and corrects. The rule:
+#
+#     table_x = true_marker_x + (how far RIGHT you want the rover to think it is)
+#     table_y = true_marker_y
+#
+# The rover always steers the OPPOSITE way to the error it believes it has:
+# think you drifted right, correct left.
+#
+# Set for a marker standing at (0.0, 7.5) -- dead ahead on the path centreline,
+# 7.5 m along a 17 m run -- with a 0.7 m rightward error injected:
+#     table_x = 0.0 + 0.7 = +0.7
+# The rover then places itself at x = +0.7, believes it has drifted 0.7 m to
+# its right, and steers 0.7 m LEFT to rejoin the path. Move the marker to one
+# side and re-derive: a marker truly at x = +1.0 would need table_x = +1.7.
+# To reverse the direction, negate the injected term.
+#
+# Sign reminder: heading is map +Y, so map +X is the rover's RIGHT.
 LANDMARKS_XY = {
-    51: (1.10, 2.44), 52: (7.269, 9.482), 53: (7.878, 17.583), 54: (0.71, 2.44),
+    51: (0.70, 7.50), 52: (7.269, 9.482), 53: (7.878, 17.583), 54: (9.225, 22.389),
     55: (3.518, 23.990), 56: (0.882, 16.870), 57: (-3.944, 21.415), 58: (-5.491, 16.334),
     59: (-7.695, 13.528), 60: (-1.610, 12.602), 61: (-7.715, 9.721), 62: (-4.311, 4.442),
     63: (-5.720, 28.118), 64: (-11.438, 5.230), 65: (6.483, 1.102),
@@ -163,11 +194,20 @@ class ArucoLocalizationNode(Node):
         self.declare_parameter('position_topic', '/aruco_localization/rover_position_fix')
         self.declare_parameter('position_frame_id', 'map')
         self.declare_parameter('publish_debug_image', True)
-        # Source of the rover's current heading, used ONLY to rotate the
-        # camera-relative (forward, left) offset into the global frame --
-        # see compute_rover_global_position(). Must publish nav_msgs/Odometry
-        # with the world-frame yaw in pose.pose.orientation (i.e. the EKF's
-        # output, not raw wheel odometry with its untrustworthy encoder yaw).
+        # Heading source: the map -> base_frame transform, looked up per
+        # sighting. NOT /odometry/filtered's yaw -- that is measured in the
+        # odom frame, which is rotated from the map frame by rover_nav's
+        # MAP_TO_ODOM_YAW_DEG (re-measured per run from how the rover is
+        # parked). Going through TF composes map->odom and odom->base_footprint
+        # automatically, so this stays correct whatever that angle is set to.
+        self.declare_parameter('map_frame', 'map')
+        self.declare_parameter('base_frame', 'base_footprint')
+        # How stale a transform may be and still be used. The rover drives at
+        # ~0.2 m/s and turns slowly, so a few tens of ms of lag is harmless;
+        # this mainly bounds how long a lookup blocks the image callback.
+        self.declare_parameter('tf_timeout_s', 0.1)
+        # Retained so existing params files still load. No longer read for
+        # heading -- see map_frame/base_frame above.
         self.declare_parameter('odom_topic', '/odometry/filtered')
         # Which start line the rover is actually sitting on for this run --
         # THE thing to update right before a competition attempt (see
@@ -195,10 +235,12 @@ class ArucoLocalizationNode(Node):
         self.bridge = CvBridge()
         self.camera_matrix = None
         self.dist_coeffs = None
-        self.current_yaw = None  # set by odom_callback; None until the first message arrives
 
-        odom_topic = self.get_parameter('odom_topic').value
-        self.odom_sub = self.create_subscription(Odometry, odom_topic, self.odom_callback, 10)
+        self.map_frame = str(self.get_parameter('map_frame').value)
+        self.base_frame = str(self.get_parameter('base_frame').value)
+        self.tf_timeout = Duration(seconds=float(self.get_parameter('tf_timeout_s').value))
+        self.tf_buffer = tf2_ros.Buffer()
+        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
 
         color_topic = self.get_parameter('color_topic').value
         depth_topic = self.get_parameter('depth_topic').value
@@ -233,8 +275,9 @@ class ArucoLocalizationNode(Node):
         self._start_seed_timer = self.create_timer(2.0, self._publish_start_seed)
 
         self.get_logger().info(
-            f'heading source: {odom_topic} (fused yaw, read-only) -- no fix is published '
-            'until the first odometry message arrives.'
+            f'heading source: TF {self.map_frame} -> {self.base_frame} (looked up per '
+            'sighting, so it tracks rover_nav MAP_TO_ODOM_YAW_DEG automatically) -- '
+            'no fix is published while that transform is unavailable.'
         )
 
     def _publish_start_seed(self):
@@ -273,15 +316,42 @@ class ArucoLocalizationNode(Node):
             f'seed, not a real detection -- this will not repeat)'
         )
 
-    def odom_callback(self, msg: Odometry):
-        """Tracks only the latest fused yaw -- read-only, never written back.
-        No time-sync with image_callback beyond "most recent sample": the EKF
-        publishes at 40Hz against a ~30fps camera and this rover moves slowly
-        (BASE_VELOCITY ~0.2 m/s), so the heading changes negligibly within one
-        frame period. Revisit with proper interpolation if that stops holding
-        (e.g. much faster driving or turning)."""
-        q = msg.pose.pose.orientation
-        self.current_yaw = 2.0 * math.atan2(q.z, q.w)  # valid for roll=pitch=0 (two_d_mode EKF)
+    def lookup_map_yaw(self, stamp):
+        """The rover's heading in the MAP frame at `stamp`, or None.
+
+        Composed through TF (map -> odom -> base_frame) rather than read off
+        /odometry/filtered, so it stays correct for any value of rover_nav's
+        MAP_TO_ODOM_YAW_DEG -- that number is re-measured per run from how the
+        rover is actually parked, and using odom yaw as if it were map yaw
+        rotates every fix about its landmark by exactly the difference.
+
+        Falls back to the latest available transform if none is buffered at
+        the image's own timestamp: the alternative is dropping the sighting
+        entirely, and at 0.2 m/s a few tens of milliseconds of heading lag is
+        far smaller than the depth noise already in the fix. Returns None only
+        if the chain is genuinely unavailable, in which case no fix is
+        published at all."""
+        try:
+            tf = self.tf_buffer.lookup_transform(
+                self.map_frame, self.base_frame, stamp, timeout=self.tf_timeout)
+        except tf2_ros.TransformException:
+            try:
+                tf = self.tf_buffer.lookup_transform(
+                    self.map_frame, self.base_frame, rclpy.time.Time(),
+                    timeout=self.tf_timeout)
+            except tf2_ros.TransformException as exc:
+                self.get_logger().warn(
+                    f'no {self.map_frame} -> {self.base_frame} transform ({exc}) -- '
+                    'suppressing fix(es); a heading is required to place a landmark '
+                    'in the global frame. Is localization (and map_odom_broadcaster) up?',
+                    throttle_duration_sec=5.0)
+                return None
+        q = tf.transform.rotation
+        # roll = pitch = 0 under the EKF's two_d_mode, so the full formula
+        # reduces to this; kept in the general form anyway since a TF chain
+        # can carry a non-planar link the odom topic never would.
+        return math.atan2(2.0 * (q.w * q.z + q.x * q.y),
+                          1.0 - 2.0 * (q.y * q.y + q.z * q.z))
 
     def image_callback(self, color_msg: Image, depth_msg: Image, info_msg: CameraInfo):
         color = self.bridge.imgmsg_to_cv2(color_msg, desired_encoding='bgr8')
@@ -300,17 +370,12 @@ class ArucoLocalizationNode(Node):
 
         display = color.copy() if self.debug_pub is not None else None
         fixes = []  # (marker_id, name, x_rover, y_rover, dist_m)
-        # Snapshot once per frame rather than re-reading self.current_yaw per
-        # marker -- keeps every fix in this frame consistent with itself even
-        # if odom_callback fires mid-loop.
-        yaw = self.current_yaw
+        # Looked up once per frame, at the image's own timestamp, so every fix
+        # in this frame is consistent with itself and with when the picture was
+        # actually taken.
+        yaw = self.lookup_map_yaw(color_msg.header.stamp) if ids is not None else None
 
         if ids is not None:
-            if yaw is None:
-                self.get_logger().warn(
-                    'landmark(s) in view but no odometry received yet -- suppressing '
-                    'fix(es); need a heading to place them in the global frame.',
-                    throttle_duration_sec=5.0)
 
             for marker_corners, marker_id in zip(corners, ids.flatten()):
                 marker_id = int(marker_id)

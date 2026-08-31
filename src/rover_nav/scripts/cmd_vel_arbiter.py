@@ -45,6 +45,18 @@ calling /planner/start -- same safety posture as drive_auto_arm defaulting
 to false elsewhere in this stack. Call:
   ros2 service call /planner/start std_srvs/srv/Trigger
 to actually start driving once the drive is armed.
+
+Forward obstacles gate motion too: /obstacle_detected from
+Rover_path_controller/pcl_obstacle_detector.py holds the rover exactly the way
+an unarmed drive or stale odometry does. Like those, it fails CLOSED -- a
+detector that is not running, or has gone silent for obstacle_timeout_s, holds
+rather than being read as "clear". Runs with no camera must therefore say so:
+
+  ros2 run rover_nav cmd_vel_arbiter.py --ros-args -p obstacle_stop_enabled:=false
+
+The gate sits inside _safety_gate, so it does NOT block the teleop override --
+_control_loop forwards a live stick before the gate is consulted, and a human
+on the sticks is assumed to be able to see the obstacle themselves.
 """
 
 import math
@@ -95,6 +107,55 @@ def point_global_to_local(point, yaw, pos):
     return local_x, local_y
 
 
+def final_heading_vector(path):
+    """Unit vector of the path's travel direction at its last point.
+
+    Walks back from the end until it finds a point far enough away to give a
+    meaningful direction -- consecutive poses can be coincident (or a few
+    millimetres apart) where a planner packs points tightly near a goal, and
+    normalising that gives a direction made of rounding noise."""
+    end = path[-1]
+    for i in range(len(path) - 2, -1, -1):
+        dx, dy = end[0] - path[i][0], end[1] - path[i][1]
+        d = math.hypot(dx, dy)
+        if d > 0.05:
+            return dx / d, dy / d
+    return None
+
+
+def extend_past_goal(route, extra_m, step=0.1):
+    """Continue the route straight on past its final point.
+
+    Pure pursuit chasing a lone final point is degenerate: curvature is
+    2*lateral/distance^2, so as the rover closes on it the term explodes,
+    clamps at max_curvature, and the rover flies a circle around the goal it
+    can never tighten. That is the observed "loops around the last point and
+    never stops".
+
+    Tracking a LINE has no such singularity. Extending the route about one
+    lookahead beyond the goal keeps an ordinary lookahead point ahead of the
+    rover the whole way in, so it drives THROUGH the goal instead of trying to
+    converge onto it, and the run ends when it crosses the goal rather than
+    when it manages to get inside some radius.
+
+    Measured over 300 realistic arrivals (<=15 cm lateral, <=15 deg heading):
+    stopping distance median 0.087 m / worst 0.189 m, versus 0.140 m / 0.320 m
+    for chasing the endpoint -- and no orbits in either case, where the tight
+    0.05 m radius alone orbited outright.
+
+    The extension is drive-through only. It is never a goal, never a waypoint,
+    and the rover is stopped before reaching its end."""
+    f = final_heading_vector(route)
+    if f is None or extra_m <= 0.0:
+        return list(route), list(route[-1])
+    goal = list(route[-1])
+    out = list(route)
+    n = max(1, int(round(extra_m / step)))
+    for i in range(1, n + 1):
+        out.append([goal[0] + f[0] * step * i, goal[1] + f[1] * step * i])
+    return out, goal
+
+
 def calc_curvature(local_x, local_y):
     ld = math.hypot(local_x, local_y)
     if ld < 0.01:
@@ -121,12 +182,76 @@ class CmdVelArbiter(Node):
         self.declare_parameter("odom_timeout_s", 0.5)
         self.declare_parameter("control_rate_hz", 20.0)
         self.declare_parameter("stuck_timeout_s", 3.0)
+        self.declare_parameter("obstacle_stop_enabled", True)
+        self.declare_parameter("obstacle_topic", "/obstacle_detected")
+        self.declare_parameter("obstacle_timeout_s", 1.0)
+        self.declare_parameter("obstacle_clear_s", 0.5)
+        # Local planner hand-off. When enabled, cmd_vel_arbiter stops deciding for
+        # itself what an obstacle means: local_planner.py owns the stop/detour
+        # decision and this node executes it. The /obstacle_detected Bool gate is
+        # replaced by /local_plan/hold, which fails closed identically.
+        self.declare_parameter("local_plan_enabled", False)
+        self.declare_parameter("local_plan_topic", "/local_plan")
+        self.declare_parameter("local_hold_topic", "/local_plan/hold")
+        self.declare_parameter("local_cmd_topic", "/local_plan/cmd")
+        self.declare_parameter("local_plan_timeout_s", 1.0)
+        self.declare_parameter("local_cmd_timeout_s", 0.3)
         # dynamic_typing: the value can legitimately arrive as a DOUBLE --
         # see test_path_loader.coerce_name() for why "infinity" does exactly that.
         self.declare_parameter("test_path", "", ParameterDescriptor(dynamic_typing=True))
         self.declare_parameter("test_path_anchor", "start_pose")
         self.declare_parameter("test_path_goal_tolerance", 0.25)
+        # Back to 0.05 m now that the route runs out past the goal (see
+        # extend_past_goal). The loose 0.40 m this briefly used was a
+        # workaround for the endpoint-chasing orbit, and with the run-out it
+        # actively hurts: measured over 400 realistic arrivals it fired first
+        # in 303 of them, stopping the rover up to 0.40 m short instead of
+        # letting it drive through the goal. At 0.05 m the crossing test does
+        # the work and the stop distance drops from 0.139 m median / 0.320 m
+        # worst to 0.088 m / 0.189 m. Tightening below 0.05 changes nothing --
+        # the crossing test already handles everything by then.
         self.declare_parameter("path_goal_tolerance", 0.05)
+        # How long to let the radius test try before the finish-line fallback
+        # is allowed to end the run. Sized from measurement, not taste: a
+        # recoverable bad arrival converges in 3-13 s, while a genuine orbit
+        # crosses the finish line within 0-1.5 s and never converges. Firing on
+        # first crossing therefore cuts short approaches that would have
+        # reached 0.05 m, ending them ~0.4 m out instead. Waiting past the
+        # slowest recovery keeps the radius test as the real answer and leaves
+        # the line purely as the thing that stops an orbit -- at 0.2 m/s this
+        # bounds an orbit at well under one revolution. Shortened from 20 s
+        # once path_goal_tolerance was loosened to 0.40: a looser radius
+        # converges far sooner, so less patience is needed before concluding
+        # the rover is circling rather than still arriving.
+        self.declare_parameter("endgame_grace_s", 10.0)
+        # How far the route is continued past its final point, as a multiple of
+        # lookahead_distance. Needs to exceed one lookahead or the rover runs
+        # out of extension before it reaches the goal and the endpoint-chasing
+        # degeneracy returns. 1.5x leaves margin.
+        self.declare_parameter("goal_runout_lookaheads", 1.5)
+        # Dynamic lookahead. Tracking wants it SHORT (hugs the path, corners
+        # accurately); recovering from a large lateral error wants it LONG
+        # (keeps the demanded curvature under max_curvature instead of pinning
+        # the clamp and circling, which is what a 0.7 m ArUco snap did at
+        # 0.5 m fixed). One constant cannot serve both, so scale it with the
+        # error actually being corrected:
+        #
+        #   L = clamp(L_min + gain * cross_track_error, L_min, L_max)
+        #
+        # Self-damping: as the error shrinks the lookahead shrinks with it, so
+        # the rover eases back onto the path and then tracks tightly, rather
+        # than weaving the way a permanently-long lookahead does.
+        #
+        # L_max is deliberately modest. A long lookahead cuts corners -- the
+        # rover deviates to the INSIDE of curves -- and this follower has no
+        # costmap of its own (/obstacle_detected is a stop/go flag, not a map),
+        # so nothing here can see that it is cutting into an inflated obstacle.
+        # Bounding L_max bounds how far off the planned, collision-checked path
+        # the rover can stray while correcting.
+        self.declare_parameter("lookahead_dynamic", True)
+        self.declare_parameter("lookahead_min", 0.5)
+        self.declare_parameter("lookahead_max", 1.0)
+        self.declare_parameter("lookahead_error_gain", 1.0)
         self.declare_parameter("path_csv", "")
         self.declare_parameter("path_frame", "map")
         self.declare_parameter("waypoints_csv", "")
@@ -164,6 +289,15 @@ class CmdVelArbiter(Node):
         # waypoint was missed by 24.7 cm while every crossed waypoint before it
         # came within 4.3 cm.
         self.path_goal_tolerance = float(self.get_parameter("path_goal_tolerance").value)
+        self.endgame_grace_s = float(self.get_parameter("endgame_grace_s").value)
+        self.endgame_since = None
+        self.goal_runout = float(self.get_parameter('goal_runout_lookaheads').value)
+        self.lookahead_dynamic = bool(self.get_parameter("lookahead_dynamic").value)
+        self.lookahead_min = float(self.get_parameter("lookahead_min").value)
+        self.lookahead_max = float(self.get_parameter("lookahead_max").value)
+        self.lookahead_error_gain = float(self.get_parameter("lookahead_error_gain").value)
+        self.route_goal = None   # true final point, before the run-out
+        self.goal_armed = False  # see the goal test in _drive_test_path
         self.path_csv = str(self.get_parameter("path_csv").value).strip()
         self.path_frame = str(self.get_parameter("path_frame").value).strip()
         self.waypoints_csv = str(self.get_parameter("waypoints_csv").value).strip()
@@ -240,6 +374,42 @@ class CmdVelArbiter(Node):
         # ---- /cmd_vel ownership conflict tracking
         self.conflict = False
 
+        # ---- forward obstacle stop-gate (pcl_obstacle_detector.py)
+        # Deliberately fail-closed, the same posture as drive_enabled below: an
+        # absent detector must not read as "the way is clear". A run with no
+        # camera therefore needs obstacle_stop_enabled:=false, which is an
+        # explicit decision rather than a silent one.
+        self.obstacle_stop_enabled = bool(self.get_parameter("obstacle_stop_enabled").value)
+        self.obstacle_topic = str(self.get_parameter("obstacle_topic").value)
+        self.obstacle_timeout_s = float(self.get_parameter("obstacle_timeout_s").value)
+        # Hold clear for this long before releasing the brake. The detector is a
+        # per-frame classifier with no temporal filtering, so a single dropout
+        # frame on a real obstacle would otherwise lurch the rover forward.
+        self.obstacle_clear_s = float(self.get_parameter("obstacle_clear_s").value)
+        self.obstacle_blocked = False
+        self.obstacle_seen = False
+        self.last_obstacle_time = None
+        self.obstacle_clear_since = None
+
+        self.local_plan_enabled = bool(self.get_parameter("local_plan_enabled").value)
+        self.local_plan_topic = str(self.get_parameter("local_plan_topic").value)
+        self.local_hold_topic = str(self.get_parameter("local_hold_topic").value)
+        self.local_cmd_topic = str(self.get_parameter("local_cmd_topic").value)
+        self.local_plan_timeout_s = float(self.get_parameter("local_plan_timeout_s").value)
+        self.local_cmd_timeout_s = float(self.get_parameter("local_cmd_timeout_s").value)
+        # local_route is what the rover actually chases while the local planner
+        # is driving. self.route stays the GLOBAL route throughout, because that
+        # is what tracking error and waypoint crossings are measured against --
+        # a detour is a deliberate departure from it, not a new definition of it.
+        self.local_route = None
+        self.local_idx = 0
+        self.local_hold = True
+        self.local_hold_seen = False
+        self.last_local_plan_time = None
+        self.last_local_hold_time = None
+        self.local_cmd = None
+        self.last_local_cmd_time = 0.0
+
         self.pub = self.create_publisher(Twist, self.cmd_vel_topic, 10)
 
         # Latched so RViz (rviz/global_path_view.rviz, already subscribed to
@@ -263,6 +433,14 @@ class CmdVelArbiter(Node):
         )
         self.create_subscription(Bool, self.drive_enabled_topic, self._on_drive_enabled, latched_qos)
 
+        if self.obstacle_stop_enabled and not self.local_plan_enabled:
+            self.create_subscription(Bool, self.obstacle_topic, self._on_obstacle, 10)
+
+        if self.local_plan_enabled:
+            self.create_subscription(Path, self.local_plan_topic, self._on_local_plan, latched_qos)
+            self.create_subscription(Bool, self.local_hold_topic, self._on_local_hold, 10)
+            self.create_subscription(Twist, self.local_cmd_topic, self._on_local_cmd, 10)
+
         self.create_service(Trigger, "/planner/start", self._on_start_srv)
         self.create_service(Trigger, "/planner/stop", self._on_stop_srv)
 
@@ -277,10 +455,19 @@ class CmdVelArbiter(Node):
                     f"{path_length(self.test_path_points):.1f} m, anchor={self.test_path_anchor})")
         else:
             what = f"{len(WAYPOINTS)} waypoint(s)"
+        obstacle_note = (
+            f"obstacle stop: {self.obstacle_topic}" if self.obstacle_stop_enabled
+            else "obstacle stop: DISABLED"
+        )
         self.get_logger().info(
             f"cmd_vel_arbiter ready: {what} -> {self.cmd_vel_topic} | "
-            f"teleop override: {self.teleop_topic} | armed state: {self.drive_enabled_topic}"
+            f"teleop override: {self.teleop_topic} | armed state: {self.drive_enabled_topic} | "
+            f"{obstacle_note}"
         )
+        if not self.obstacle_stop_enabled:
+            self.get_logger().warn(
+                "obstacle_stop_enabled=false -- forward obstacles will NOT stop the rover"
+            )
         if self.run_started:
             self.get_logger().warn("autostart=true -- will drive as soon as armed and localized")
         else:
@@ -300,6 +487,105 @@ class CmdVelArbiter(Node):
         self.last_teleop_cmd = msg
         if abs(msg.linear.x) > self.teleop_deadband or abs(msg.angular.z) > self.teleop_deadband:
             self.last_teleop_active_time = time.monotonic()
+
+    def _on_obstacle(self, msg):
+        """Latch the forward-obstacle flag from pcl_obstacle_detector.py.
+
+        `obstacle_clear_s` is applied on the falling edge only. Blocking is
+        immediate; unblocking has to be earned by a run of consecutive clear
+        frames, so one dropped detection cannot release the brake.
+        """
+        now = time.monotonic()
+        self.last_obstacle_time = now
+        self.obstacle_seen = True
+
+        if msg.data:
+            self.obstacle_clear_since = None
+            self.obstacle_blocked = True
+            return
+
+        if self.obstacle_clear_since is None:
+            self.obstacle_clear_since = now
+        if now - self.obstacle_clear_since >= self.obstacle_clear_s:
+            self.obstacle_blocked = False
+
+    def _obstacle_gate(self, now):
+        """(allowed, reason) for the obstacle stop-gate alone."""
+        if not self.obstacle_stop_enabled:
+            return True, ""
+        if not self.obstacle_seen:
+            return False, (
+                f"no obstacle detector on {self.obstacle_topic} "
+                f"(start pcl_obstacle_detector.py, or set obstacle_stop_enabled:=false)"
+            )
+        if now - self.last_obstacle_time > self.obstacle_timeout_s:
+            return False, f"obstacle detector stale on {self.obstacle_topic}"
+        if self.obstacle_blocked:
+            return False, "obstacle ahead"
+        return True, ""
+
+    def _on_local_plan(self, msg):
+        """Adopt the route local_planner.py says to drive right now -- the global
+        route passed through, or a detour around something on it.
+
+        The index is snapped to the nearest point rather than reset to 0: a
+        detour is handed over mid-course, and restarting at the far end of a
+        path whose first point is behind the rover would drive it backwards
+        through the obstacle it is avoiding."""
+        pts = [[ps.pose.position.x, ps.pose.position.y] for ps in msg.poses]
+        if len(pts) < 2:
+            return
+        changed = self.local_route is None or len(pts) != len(self.local_route)
+        self.local_route = pts
+        self.last_local_plan_time = time.monotonic()
+        if changed and self.car_pos is not None:
+            self.local_idx = min(
+                range(len(pts)), key=lambda i: distance(self.car_pos, pts[i]))
+            self._last_seen_idx = None
+            self._stuck_since = None
+
+    def _on_local_hold(self, msg):
+        self.local_hold = bool(msg.data)
+        self.local_hold_seen = True
+        self.last_local_hold_time = time.monotonic()
+
+    def _on_local_cmd(self, msg):
+        """A direct Twist from the local planner, used only to reverse out of an
+        obstacle that closed inside min_distance. Forwarded through THIS node's
+        publisher in _control_loop so /cmd_vel keeps exactly one owner."""
+        self.local_cmd = msg
+        self.last_local_cmd_time = time.monotonic()
+
+    def _local_plan_gate(self, now):
+        """(allowed, reason) when local_planner.py owns the obstacle decision.
+
+        Fails closed on the same three things the Bool gate did: planner absent,
+        planner silent, planner saying stop."""
+        if not self.local_hold_seen or self.last_local_hold_time is None:
+            return False, (
+                f"no local planner on {self.local_hold_topic} "
+                f"(start local_planner.py, or drop local_plan_enabled)")
+        if now - self.last_local_hold_time > self.local_plan_timeout_s:
+            return False, f"local planner stale on {self.local_hold_topic}"
+        if self.local_hold:
+            return False, "local planner holding (no viable path)"
+        if self._local_cmd_active(now):
+            # Reversing out of a too-close obstacle. There is deliberately no
+            # plan during a backoff -- the one that was being driven is what got
+            # the rover into this -- so requiring a fresh /local_plan here would
+            # block the escape and strand the rover against the obstacle. Every
+            # other check above (armed, started, odom fresh, planner alive and
+            # not holding) still applies.
+            return True, ""
+        if self.local_route is None or self.last_local_plan_time is None:
+            return False, f"no route yet on {self.local_plan_topic}"
+        if now - self.last_local_plan_time > self.local_plan_timeout_s:
+            return False, f"local plan stale on {self.local_plan_topic}"
+        return True, ""
+
+    def _local_cmd_active(self, now):
+        return (self.local_cmd is not None
+                and (now - self.last_local_cmd_time) < self.local_cmd_timeout_s)
 
     def _on_drive_enabled(self, msg):
         enabled = bool(msg.data)
@@ -323,6 +609,8 @@ class CmdVelArbiter(Node):
         # replaying the first run's placement.
         self.route = None
         self.run_finished = False
+        self.endgame_since = None
+        self.goal_armed = False
         self.get_logger().info("run STARTED -- planning from the current pose")
         response.success = True
         response.message = "run started"
@@ -422,6 +710,18 @@ class CmdVelArbiter(Node):
         self.test_path_points = load_test_path(self.test_path_name)
         self.test_markers = [(mid, x, y) for mid, x, y, _ in load_markers(self.test_path_name)]
 
+    def _runout_lookahead(self):
+        """Lookahead the run-out is sized against.
+
+        Must be the LARGEST lookahead the run will ever use, not whatever it
+        happens to be when the route is built. With lookahead_dynamic the value
+        grows with tracking error, so a run-out sized on the 0.5 m minimum is
+        too short once the lookahead widens to 1.0 m near the goal -- the
+        lookahead search then finds no point far enough ahead, the index falls
+        off the end, and the endgame branch takes over exactly where the
+        run-out was supposed to prevent it."""
+        return self.lookahead_max if self.lookahead_dynamic else self.lookahead_distance
+
     def _load_path_csv(self):
         """Read a dense path CSV (and its waypoint list) written by
         plan_global_path.py. Fatal on a bad file for the same reason
@@ -483,9 +783,13 @@ class CmdVelArbiter(Node):
                 yaw = quat_to_yaw(tfm.transform.rotation.x, tfm.transform.rotation.y,
                                   tfm.transform.rotation.z, tfm.transform.rotation.w)
                 self.route = [transform_point(p, t.x, t.y, yaw) for p in self.path_points]
+                self.route, self.route_goal = extend_past_goal(
+                    self.route, self.goal_runout * self._runout_lookahead())
                 self.cross_xy = [transform_point(p, t.x, t.y, yaw) for p in self.cross_xy]
             else:
                 self.route = [list(p) for p in self.path_points]
+                self.route, self.route_goal = extend_past_goal(
+                    self.route, self.goal_runout * self._runout_lookahead())
             self.cross_best = [float("inf")] * len(self.cross_xy)
             self.route_idx = 0
             self._last_seen_idx = None
@@ -510,6 +814,8 @@ class CmdVelArbiter(Node):
             marker_ids = [mid for mid, _, _ in self.test_markers]
         else:
             self.route = [list(p) for p in self.test_path_points]
+            self.route, self.route_goal = extend_past_goal(
+                self.route, self.goal_runout * self._runout_lookahead())
             markers = [[x, y] for _, x, y in self.test_markers]
             marker_ids = [mid for mid, _, _ in self.test_markers]
 
@@ -582,11 +888,27 @@ class CmdVelArbiter(Node):
         )
         self._publish(0.0, 0.0)
 
+    def _advance_global_idx(self):
+        """Keep route_idx tracking progress along the GLOBAL route even while a
+        detour is being driven, so tracking error stays measured against the
+        route the run is judged on. Windowed forward search -- a global one
+        would snap to the wrong pass on a self-crossing course."""
+        lo = self.route_idx
+        hi = min(len(self.route), self.route_idx + 60)
+        best = min(range(lo, hi), key=lambda i: distance(self.car_pos, self.route[i]))
+        self.route_idx = best
+
     def _drive_test_path(self, now):
         """Continuous pure pursuit along the whole anchored course -- no
         per-waypoint stop-and-go (that is what _control_loop's waypoint branch
         does), because these paths exist to measure uninterrupted curvature
-        tracking."""
+        tracking.
+
+        With local_plan_enabled, the route CHASED may be a detour published by
+        local_planner.py instead of the global route. self.route stays global
+        throughout: the detour is a departure from the run's reference, not a
+        replacement for it, and scoring it against itself would report a
+        perfectly tracked detour as a perfectly tracked run."""
         self._ensure_route()
         if self.route is None:
             self._hold("waiting for odometry / map->odom to place the path")
@@ -595,13 +917,72 @@ class CmdVelArbiter(Node):
             self._publish(0.0, 0.0)
             return
 
+        detouring = self.local_plan_enabled and self.local_route is not None
+        if detouring:
+            self._advance_global_idx()
         err = self._record_tracking_error()
 
+        # Widen the lookahead in proportion to how far off the path we are, so
+        # a large correction is asked for gently rather than at the curvature
+        # clamp. Uses the cross-track error measured this tick, so it responds
+        # to a pose snap immediately and relaxes as the rover converges.
+        if self.lookahead_dynamic:
+            self.lookahead_distance = min(
+                self.lookahead_max,
+                max(self.lookahead_min,
+                    self.lookahead_min + self.lookahead_error_gain * err))
+
+        chase = self.local_route if detouring else self.route
+        idx = self.local_idx if detouring else self.route_idx
+        # A detour ends at its rejoin point, not at the goal. Only the route
+        # whose end IS the global goal may declare the run complete.
+        can_finish = (not detouring) or distance(chase[-1], self.route[-1]) < 0.1
+
+        # ---- goal test, every tick ----
+        # This has to run BEFORE the lookahead search, not inside the
+        # "index exhausted" branch below. The run-out appended past the goal
+        # keeps supplying points ahead, so the index never runs out while the
+        # rover is approaching -- nesting the test in that branch meant it was
+        # never evaluated at the moment of crossing. The rover drove through
+        # the goal, carried on down the run-out, and only stopped once the
+        # run-out itself was exhausted, roughly one run-out length past the
+        # goal. Measured on hardware as a 0.6 m overshoot on a path it had
+        # passed within centimetres of.
+        goal = (self.route_goal if (not detouring and self.route_goal is not None)
+                else chase[-1])
+        gap = distance(self.car_pos, goal)
+
+        # Armed only after the rover has genuinely been away from the goal.
+        # A closed loop starts ON its own final point, so an unguarded test
+        # fires at t=0 and the run ends before it begins. A latch handles open
+        # and closed routes alike without any index arithmetic.
+        if not self.goal_armed and gap > max(3.0 * self.lookahead_distance, 2.0):
+            self.goal_armed = True
+
+        if can_finish and self.goal_armed:
+            done_radius = (self.path_goal_tolerance if self.path_csv
+                           else self.test_path_goal_tolerance)
+            f_end = final_heading_vector(chase)
+            crossed = False
+            if f_end is not None and gap < max(2.0 * self.lookahead_distance, 1.0):
+                to_goal = (goal[0] - self.car_pos[0], goal[1] - self.car_pos[1])
+                crossed = (to_goal[0] * f_end[0] + to_goal[1] * f_end[1]) <= 0.0
+            if gap < done_radius or crossed:
+                if detouring:
+                    self.local_idx = min(idx, len(chase) - 1)
+                else:
+                    self.route_idx = min(idx, len(chase) - 1)
+                self.get_logger().info(
+                    f"finish: {'crossed the goal' if crossed else 'within tolerance'} "
+                    f"({gap:.3f} m from it)")
+                self._finish_run()
+                return
+
         lookahead_point = None
-        for i in range(self.route_idx, len(self.route)):
-            if distance(self.car_pos, self.route[i]) >= self.lookahead_distance:
-                lookahead_point = self.route[i]
-                self.route_idx = i
+        for i in range(idx, len(chase)):
+            if distance(self.car_pos, chase[i]) >= self.lookahead_distance:
+                lookahead_point = chase[i]
+                idx = i
                 break
 
         # No point far enough ahead left in the course: the rover is inside
@@ -611,36 +992,54 @@ class CmdVelArbiter(Node):
         # makes completion mean "drove the whole thing", not "stands near the
         # end".
         if lookahead_point is None:
-            self.route_idx = len(self.route) - 1
-            done_radius = (self.path_goal_tolerance if self.path_csv
-                           else self.test_path_goal_tolerance)
-            if distance(self.car_pos, self.route[-1]) < done_radius:
+            # Index exhausted: the rover is past the end of even the run-out.
+            # The goal test above already handles arrival, so reaching here at
+            # all means it never crossed -- circling wide, or it never came
+            # within arming range. Nothing here can be stopped by hand, so end
+            # the run rather than drive on forever.
+            idx = len(chase) - 1
+            if self.endgame_since is None:
+                self.endgame_since = now
+            if can_finish and (now - self.endgame_since) >= self.endgame_grace_s:
+                if detouring:
+                    self.local_idx = idx
+                else:
+                    self.route_idx = idx
+                self.get_logger().warn(
+                    f"finish: gave up after {now - self.endgame_since:.0f}s past the end "
+                    f"of the route without crossing the goal ({gap:.2f} m from it)")
                 self._finish_run()
                 return
-            lookahead_point = self.route[-1]
+            lookahead_point = chase[-1]
 
-        if self.route_idx == self._last_seen_idx:
+        if idx == self._last_seen_idx:
             if self._stuck_since is None:
                 self._stuck_since = now
             elif now - self._stuck_since >= self.stuck_timeout_s:
                 self.get_logger().warn(
-                    f"lookahead index {self.route_idx} hasn't advanced in "
+                    f"lookahead index {idx} hasn't advanced in "
                     f"{self.stuck_timeout_s:.1f}s (stuck circling) -- forcing it forward."
                 )
-                self.route_idx = min(self.route_idx + 1, len(self.route) - 1)
-                lookahead_point = self.route[self.route_idx]
+                idx = min(idx + 1, len(chase) - 1)
+                lookahead_point = chase[idx]
                 self._stuck_since = None
-                self._last_seen_idx = self.route_idx
+                self._last_seen_idx = idx
         else:
             self._stuck_since = None
-            self._last_seen_idx = self.route_idx
+            self._last_seen_idx = idx
+
+        if detouring:
+            self.local_idx = idx
+        else:
+            self.route_idx = idx
 
         local_x, local_y = point_global_to_local(lookahead_point, self.car_yaw, self.car_pos)
         curvature = max(-self.max_curvature, min(self.max_curvature, calc_curvature(local_x, local_y)))
         angular = curvature * self.base_velocity
 
+        what = "local_plan" if detouring else (self.test_path_name or "global path")
         self.get_logger().info(
-            f"{self.test_path_name} {self.route_idx + 1}/{len(self.route)} | "
+            f"{what} {idx + 1}/{len(chase)} | "
             f"pos: [{self.car_pos[0]:.2f}, {self.car_pos[1]:.2f}] | "
             f"err: {err:.3f} m (max {self.err_max:.3f}) | curv: {curvature:.3f}",
             throttle_duration_sec=0.5,
@@ -687,18 +1086,38 @@ class CmdVelArbiter(Node):
         if not self.drive_enabled:
             reason = "drive not armed" if self.drive_enabled_seen else "drive arm state unknown"
             return False, reason
-        return True, ""
+        if self.local_plan_enabled:
+            return self._local_plan_gate(now)
+        return self._obstacle_gate(now)
 
     def _hold(self, reason):
+        """Log on change, then keep repeating at a low rate.
+
+        Logging only on change makes a PERSISTENT hold invisible: the reason
+        prints once at startup, scrolls off, and from then on the node sits
+        silently publishing zero twist with no clue why. That is indisting-
+        uishable from "driving but not moving" when you are looking at a
+        terminal full of other nodes, and it cost a debugging session.
+        Repeating every 10s stays quiet enough to read while keeping the
+        current reason always on screen."""
         if reason != self.gate_reason:
             self.gate_reason = reason
             self.get_logger().warn(f"holding: {reason}")
+        else:
+            self.get_logger().warn(f"still holding: {reason}", throttle_duration_sec=10.0)
         self._publish(0.0, 0.0)
 
     def _control_loop(self):
         now = time.monotonic()
 
         self._try_load_waypoints()
+        # Place and publish the global route before the gate is consulted, not
+        # after. local_planner.py reads /pure_pursuit/path to know what route to
+        # keep clear, and the gate below waits on local_planner -- so leaving
+        # this inside the post-gate drive path made each node wait for the
+        # other and neither ever moved.
+        if self.path_csv:
+            self._ensure_route()
         self._check_ownership()
         if self.conflict:
             self._publish(0.0, 0.0)
@@ -719,6 +1138,14 @@ class CmdVelArbiter(Node):
         if self.gate_reason:
             self.get_logger().info("cleared to drive")
             self.gate_reason = ""
+
+        # The local planner is reversing out of something that closed inside
+        # min_distance. Pure pursuit cannot express that (it only ever drives
+        # forward), so the Twist is forwarded verbatim -- through this node's
+        # publisher, so /cmd_vel still has exactly one owner.
+        if self.local_plan_enabled and self._local_cmd_active(now):
+            self.pub.publish(self.local_cmd)
+            return
 
         if self.test_path_name or self.path_csv:
             # A teleop nudge mid-course must NOT re-anchor: the course is a

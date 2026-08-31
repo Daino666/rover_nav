@@ -42,19 +42,45 @@ START         = [0.0, 0.0]
 START_HEADING = 0.0  # radians, 0 = facing +X
 WAYPOINTS     = [[2.0, 3.0], [4.0, 2.0], [5.0, 1.0], [4.0, -2.0], [2.0, -3.0]]
 
-# map -> odom alignment correction: how this rover's local odom frame sits
-# relative to the competition's map frame (the frame WAYPOINTS above are
-# expressed in). Published once at startup by map_odom_broadcaster.py.
-# Defaults to identity (rover assumed to power on exactly at the
-# competition's origin point, facing its +X axis) since the actual
-# competition-day alignment procedure -- how these three numbers actually
-# get determined from the two given reference points -- is still TBD; there
-# is no absolute-position sensor (GPS/RTK/etc) on this rover to compute it
-# automatically. Edit these directly before a run, same workflow as
-# WAYPOINTS above, once the real numbers are known.
-MAP_TO_ODOM_X       = 0.0  # metres
-MAP_TO_ODOM_Y       = 0.0  # metres
-MAP_TO_ODOM_YAW_DEG = 0.0  # degrees
+# map -> odom alignment: where the rover's local odom frame sits inside the
+# competition's map frame (the frame WAYPOINTS above are given in). Published
+# once at startup by map_odom_broadcaster.py, and applied by cmd_vel_arbiter.py
+# to any map-frame path before driving it.
+#
+# YAW is the direction the rover's nose points, measured in the map frame, at
+# the moment localization starts. imu_yaw_zero.py makes odom's yaw read 0 there
+# whichever way the rover is actually facing, so this number carries the whole
+# difference. Parked facing the map's +Y axis -- nose up the yard, map +X off
+# the right-hand side -- that is 90.
+#
+# X / Y are where the rover sits in the map frame at that same moment. 0, 0
+# means parked on S1.
+#
+# ---------------------------------------------------------------------------
+# TUNING THIS ON COMPETITION DAY
+#
+# These are exact numbers in a static transform, not filter state, so they are
+# the right place to absorb a small parking error -- and a small one matters:
+# heading error shows up as (distance x angle), so 1 degree is 35 cm at a
+# waypoint 20 m out.
+#
+#   Rover parked a bit clockwise of the +Y axis?   lower the yaw (90 -> 88.5)
+#   A bit counter-clockwise?                       raise it   (90 -> 91.5)
+#   Not exactly on S1?                             set X / Y to where it is
+#
+# To measure the yaw rather than eyeball it: sight along the rover's own axis
+# to any surveyed marker, and set this to the map bearing from the rover to
+# that marker, i.e. degrees(atan2(marker_y - rover_y, marker_x - rover_x)).
+#
+# Override per-run without editing or rebuilding anything:
+#   ros2 launch aries_bringup full_hardware.launch.py map_to_odom_yaw_deg:=88.5
+#
+# Check it took, and that the sign is right:
+#   ros2 run tf2_ros tf2_echo map odom      # yaw should read your value
+# ---------------------------------------------------------------------------
+MAP_TO_ODOM_X       = 0.0   # metres, rover's map-frame x at localization start
+MAP_TO_ODOM_Y       = 0.0   # metres, rover's map-frame y at localization start
+MAP_TO_ODOM_YAW_DEG = 90.0  # degrees, rover's map-frame heading at that moment
 
 
 def distance(p1, p2):

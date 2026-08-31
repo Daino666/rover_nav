@@ -22,16 +22,22 @@ install(
     scripts/publish_global_path.py
     scripts/publish_test_path.py
     scripts/plan_global_path.py
+    scripts/preview_path.py
     scripts/test_path_loader.py
     scripts/test_path_viz.py
     scripts/cmd_vel_arbiter.py
+    scripts/local_planner.py
+    scripts/sim_local_planner.py
+    scripts/tune_local_planner.py
     scripts/check_heading.py
     scripts/map_odom_broadcaster.py
     scripts/imu_yaw_zero.py
+    scripts/set_heading.py
     scripts/imu_noise_check.py
     scripts/yaw_source_compare.py
     scripts/imu_deep_log.py
     scripts/odrive_fault_log.py
+    scripts/tune_obstacle_detection.py
     scripts/Rover_path_controller/pcl_obstacle_detector.py
     scripts/Rover_path_controller/obstacle_detector_node.py
     scripts/Rover_path_controller/obstacle_avoidance.py
@@ -72,6 +78,16 @@ if(BUILD_TESTING)
   ament_add_pytest_test(
     odometry_stationary
     test/test_odometry_stationary.py
+    TIMEOUT 60
+  )
+  ament_add_pytest_test(
+    obstacle_stop_gate
+    test/test_obstacle_stop_gate.py
+    TIMEOUT 60
+  )
+  ament_add_pytest_test(
+    obstacle_array
+    test/test_obstacle_array.py
     TIMEOUT 60
   )
 endif()

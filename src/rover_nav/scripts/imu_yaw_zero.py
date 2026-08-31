@@ -84,6 +84,15 @@ class ImuYawZero(Node):
         self.declare_parameter("status_topic", "/microstrain/ekf/status")
         self.declare_parameter("startup_grace_s", 15.0)
         self.declare_parameter("reference_avg_samples", 20)
+        # What the boot heading should READ once the reference is subtracted.
+        # 0 keeps odom conventional: "forward at launch" is yaw=0 (+x), which
+        # check_heading.py, the test courses' odom_origin anchoring and this
+        # file's own name all assume. The rover's heading *within the
+        # competition map* is expressed separately, by MAP_TO_ODOM_YAW_DEG in
+        # global_path_planner.py -- a static transform, so exact, rather than
+        # a filter state that wanders. Only change this if you specifically
+        # want odom itself rotated.
+        self.declare_parameter("initial_yaw_deg", 0.0)
 
         input_topic = str(self.get_parameter("input_topic").value)
         output_topic = str(self.get_parameter("output_topic").value)
@@ -93,6 +102,7 @@ class ImuYawZero(Node):
         status_topic = str(self.get_parameter("status_topic").value)
         self.startup_grace_s = float(self.get_parameter("startup_grace_s").value)
         self.reference_avg_samples = int(self.get_parameter("reference_avg_samples").value)
+        self.initial_yaw = math.radians(float(self.get_parameter("initial_yaw_deg").value))
 
         self.reference_yaw = None
         self.filter_ready = False
@@ -146,11 +156,11 @@ class ImuYawZero(Node):
             self.reference_yaw = math.atan2(self._sin_sum, self._cos_sum)
             self.get_logger().info(
                 f"yaw reference captured (mean of {self._collected} samples): "
-                f"{math.degrees(self.reference_yaw):.2f} deg (will read as 0 "
-                "from here on)"
+                f"{math.degrees(self.reference_yaw):.2f} deg (will read as "
+                f"{math.degrees(self.initial_yaw):.1f} from here on)"
             )
 
-        corrected_yaw = normalize_angle(yaw - self.reference_yaw)
+        corrected_yaw = normalize_angle(yaw - self.reference_yaw + self.initial_yaw)
 
         out = Imu()
         out.header = msg.header

@@ -1,0 +1,99 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+    Property Tree Widget:
+      Expanded:
+        - /Obstacles1
+      Splitter Ratio: 0.5
+    Tree Height: 700
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Class: rviz_default_plugins/Grid
+      Name: Grid
+      Cell Size: 0.5
+      Plane: XZ
+      Color: 60; 60; 60
+      Line Style:
+        Line Width: 0.01
+        Value: Lines
+      Normal Cell Count: 0
+      Plane Cell Count: 20
+      Enabled: true
+    - Class: rviz_default_plugins/PointCloud2
+      Name: Raw cloud
+      Topic:
+        Value: /camera/camera/depth/color/points
+        Depth: 1
+        Durability Policy: Volatile
+        Reliability Policy: Best Effort
+        History Policy: Keep Last
+      Color Transformer: FlatColor
+      Color: 70; 70; 90
+      Size (Pixels): 2
+      Size (m): 0.01
+      Style: Points
+      Alpha: 0.35
+      Decay Time: 0
+      Enabled: false
+    - Class: rviz_default_plugins/PointCloud2
+      Name: Denoised
+      Topic:
+        Value: /pcl/denoised
+        Depth: 1
+        Durability Policy: Volatile
+        Reliability Policy: Best Effort
+        History Policy: Keep Last
+      Color Transformer: AxisColor
+      Axis: Z
+      Size (Pixels): 3
+      Size (m): 0.01
+      Style: Points
+      Alpha: 1
+      Decay Time: 0
+      Enabled: true
+    - Class: rviz_default_plugins/MarkerArray
+      Name: Obstacles
+      Topic:
+        Value: /obstacles/markers
+        Depth: 100
+        Durability Policy: Volatile
+        Reliability Policy: Reliable
+        History Policy: Keep Last
+      Namespaces:
+        {}
+      Enabled: true
+    - Class: rviz_default_plugins/TF
+      Name: TF
+      Marker Scale: 0.3
+      Show Names: true
+      Show Axes: true
+      Show Arrows: false
+      Enabled: false
+  Global Options:
+    Background Color: 25; 25; 30
+    Fixed Frame: camera_depth_optical_frame
+    Frame Rate: 30
+  Tools:
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+  Value: true
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Name: Current View
+      Distance: 4
+      Focal Point:
+        X: 0
+        Y: 0
+        Z: 1.2
+      Pitch: 0.2
+      Yaw: 3.14
+      Target Frame: <Fixed Frame>
+    Saved: ~
+Window Geometry:
+  Displays:
+    collapsed: false
+  Height: 900
+  Width: 1400
+  QMainWindow State: 000000ff00000000fd0000000200000000000001a4000002e2fc0200000001fb000000100044006900730070006c006100790073010000003d000002e2000000c900fffffff000000010000010f000002e2fc0200000001fb0000000a005600690065007700730100000000000002e2000000a400ffffff0000038a000002e200000001000000020000000100000002fc0000000100000002000000000000000000000000

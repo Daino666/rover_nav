@@ -26,6 +26,8 @@ setup(
     entry_points={
         'console_scripts': [
             'aruco_detect_roverpos = rover_detection.aruco_detect_roverpos:main',
+            'aruco_pose_reset = rover_detection.aruco_pose_reset:main',
+            'virtual_aruco = rover_detection.virtual_aruco:main',
         ],
     },
 )

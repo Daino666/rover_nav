@@ -36,7 +36,7 @@ cmd_vel_odrive_bridge:
     wheel_circumference_m: 0.697
     track_width_m: 0.566
 
-    max_linear_mps: 0.45
+    max_linear_mps: 0.85
     max_angular_rps: 2.10
     max_wheel_rps: 1.50
     wheel_accel_rps2: 3.0

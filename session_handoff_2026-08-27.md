@@ -168,6 +168,12 @@ colcon build --packages-select aries_bringup --symlink-install
 
 ### 3. One camera: detection and arm-vision are mutually exclusive
 
+> **Stale as of 2026-08-28: there are now two D435i on USB** — 216322070216
+> (gripper) and 207522077539 (rover front), so they are no longer mutually
+> exclusive. The serial-assignment trap below still applies, and gets worse:
+> unclaimed serials go gripper-first *lowest serial first*, which for this
+> pair assigns them backwards. Pin both explicitly.
+
 Two `realsense2_camera` drivers cannot open the same D435i; the loser exits
 *after* locking the device.
 
@@ -220,6 +226,12 @@ Z forward**. Consequences:
 
 ### 7. Ground removal is unreliable; use a Y cut instead
 
+> **Superseded 2026-08-28 — do not add the Y passthrough.** The detector now
+> removes ground by height (`camera_height` / `ground_margin`) and still fits
+> a plane, but only within `ground_band` and only if its normal is within
+> `normal_tol_deg` of vertical. That fixes the actual bug diagnosed here (a
+> wall winning the fit) without a second passthrough node.
+
 `pcd.segment_plane()` removes exactly **one** plane — the dominant one. In an
 indoor corridor cropped to 0.1–2.0 m the dominant plane can be a *wall*, so
 the floor survives into DBSCAN. Observed live: floor patches present in
@@ -242,6 +254,9 @@ Once this works the RANSAC block is redundant and should be deleted — it
 costs a plane fit per frame and can remove the wrong surface.
 
 ### 8. `DBSCAN_EPS = 0.80` merges everything into one box
+
+> **Fixed 2026-08-28.** Defaults are now 0.20 / 12. Reproduced live first:
+> one box spanning a person and a wall section ~0.5 m to their side.
 
 At `VOXEL_SIZE = 0.05` that tolerates a 16-voxel gap, so residual floor
 points chain into the real obstacle's cluster. Observed live as one giant
@@ -299,26 +314,47 @@ TF resolves fine. **Confirm which mount the single D435i is physically on.**
 | `/passthrough_filter` | `filter_limit_min` / `max` | 0.1 / 2.0 | Z = forward range gate |
 | `/sor_filter` | `mean_k` / `stddev` | 50 / 1.0 | Denoise; 50/1.0 eats sparse far returns |
 
-**Edit + restart** — `pcl_obstacle_detector.py:16-21`:
+> **Updated 2026-08-28.** The detector was reworked since this was written.
+> Every constant below is now a **declared ROS parameter re-read each frame**,
+> so nothing here needs an edit or a restart. Ground removal is height-based
+> (`camera_height` / `ground_margin`), not the Y-passthrough of Finding 7.
 
-| Constant | Default | Notes |
+**Live-tunable** on `/obstacle_detector` — use the tuner, which types values off
+each node's descriptors and so dodges the Finding 9 YAML trap:
+
+```bash
+ros2 run rover_nav tune_obstacle_detection.py     # presets: tight lowrock fast open
+```
+
+| Param | Default | Notes |
 |---|---|---|
-| `VOXEL_SIZE` | 0.05 | Biggest speed lever |
-| `PLANE_DIST_THRESH` | 0.05 | RANSAC band (see Finding 7) |
-| `DBSCAN_EPS` | 0.80 | **Too loose** — use 0.20 |
-| `DBSCAN_MIN_PTS` | 5 | **Too low** — use ~12 |
-| `MIN_CLUSTER_PTS` | 30 | Coupled to `VOXEL_SIZE` |
-| `MAX_CENTROID_Z` | 1.5 | Forward **range**, not height |
+| `voxel_size` | 0.03 | Biggest speed lever |
+| `dbscan_eps` | 0.20 | Was 0.80; see Finding 8 |
+| `dbscan_min_pts` | 12 | Was 5 |
+| `min_cluster_pts` | 15 | Coupled to `voxel_size` |
+| `max_range` | 2.0 | Gates on the cluster's **nearest** point, not its centroid |
+| `min_obstacle_height` | 0.15 | Height above ground — a real height filter now |
+| `camera_height` | 0.489 | Optical centre above ground; measured, not taped |
+| `ground_margin` | 0.04 | Keep points this far above the ground surface |
+| `ground_band` | 0.15 | Points below this are candidates for the plane fit |
+| `fit_ground_plane` | True | Fit within the band vs. assume flat |
+| `plane_dist_thresh` / `normal_tol_deg` | 0.05 / 25.0 | Fit tolerance; reject non-horizontal fits |
 
-The `VOXEL_SIZE` ↔ `MIN_CLUSTER_PTS` coupling is the one that bites: coarsen
+`/obstacles/stats` publishes `in_pts → voxel_pts → kept_pts → raw_clusters` per
+frame, so "my rock disappeared" names the stage that dropped it.
+
+The `voxel_size` ↔ `min_cluster_pts` coupling is the one that bites: coarsen
 the voxel without lowering the floor and small rocks vanish silently.
 
 Other pipeline, `obstacle_clustering.py:12-24`: `DBSCAN_EPS` 0.20,
 `DBSCAN_MIN_SAMPLES` 20, `MAX_CENTROID_Z` 3.0, `VOXEL_SIZE` 0.03.
 
-Build with symlinks so constants are editable without rebuilding:
+`rover_nav` is currently installed as **file copies, not symlinks**, so a code
+edit needs a rebuild before `ros2 run` sees it. Parameter tuning never does.
+One-time fix:
 
 ```bash
+rm -rf ~/jazzy_ws/build/rover_nav ~/jazzy_ws/install/rover_nav
 colcon build --packages-select rover_nav --symlink-install
 ```
 
@@ -393,21 +429,39 @@ there but absent on the yard. Validate against an outdoor `empty_ground` bag.
 
 ## 6. Open items
 
-- [ ] Confirm which mount the single D435i is on (Finding 12) — blocks
-      trusting any detection geometry
-- [ ] Apply the resolution-arg fix (Finding 4)
-- [ ] Splice the Y passthrough into `obstacle_detection.launch.py` properly
-      (currently only tested as a loose `ros2 run`, and its output
-      `/pcl/noground` had no subscriber because the launch's SOR still read
-      `/pcl/front`)
-- [ ] `DBSCAN_EPS` 0.80 → 0.20, `DBSCAN_MIN_PTS` 5 → 12
-- [ ] Delete the RANSAC block once the Y cut is validated
-- [ ] Add the per-frame logging line to the detector
+Done since (2026-08-28):
+
+- [x] `DBSCAN_EPS` 0.80 → 0.20, `DBSCAN_MIN_PTS` 5 → 12 — confirmed live: at
+      0.80 a single box spanned a person and a wall section ~0.5 m to their
+      side; 0.20 / 12 splits them
+- [x] Lift the detector constants into declared ROS parameters — all of them,
+      re-read per frame
+- [x] Add per-frame numbers — `/obstacles/stats` publishes
+      `in_pts / voxel_pts / kept_pts / raw_clusters`
+- [x] Y passthrough / RANSAC — **superseded**, not done as written. The
+      detector now removes ground by height (`camera_height` /
+      `ground_margin`) and the plane fit is kept but fitted only within
+      `ground_band` and rejected if tilted past `normal_tol_deg`, which was
+      the actual failure in Finding 7
+
+Still open:
+
+- [ ] Confirm which mount each D435i is on (Finding 12) — blocks trusting any
+      detection geometry
+- [ ] Apply the resolution-arg fix (Finding 4) — still unfixed;
+      `obstacle_detection.launch.py` passes `depth_module.profile` /
+      `rgb_camera.profile`, neither of which is a real `rs_launch.py` arg, so
+      the driver silently comes up at its 848x480x30 default
+- [ ] Pin a serial in `obstacle_detection.launch.py`. **Finding 3 is out of
+      date: there are now two D435i on USB** — 216322070216 (gripper, per the
+      comment at `aries_hardware.launch.py:24-29`) and 207522077539 (rover
+      front). The launch pins neither, so it binds whichever librealsense
+      enumerates first. Note auto-assignment takes the *lowest* serial for the
+      gripper, which for this pair is backwards from the wiring
+- [ ] Rebuild `rover_nav` with `--symlink-install` (currently file copies)
 - [ ] Record the scenario bags, especially `empty_ground` and
       `direct_sunlight` outdoors
 - [ ] Add a `use_camera:=false` arg to `obstacle_detection.launch.py` so bag
       replay is one command
 - [ ] Wire `/obstacle_detected` into `cmd_vel_arbiter` as a stop-gate
 - [ ] Wire `/plan_smoothed` into `cmd_vel_arbiter` to connect nav2 (Finding 1)
-- [ ] Consider lifting the detector constants into declared ROS parameters
-      for live field tuning

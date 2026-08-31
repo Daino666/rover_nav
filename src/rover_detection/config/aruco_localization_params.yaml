@@ -12,17 +12,38 @@ aruco_localization_node:
 
     # Assumes a camera already running elsewhere with align_depth.enable:=true
     # -- this node does not launch the camera itself.
-    color_topic: /camera/camera/color/image_raw
-    depth_topic: /camera/camera/aligned_depth_to_color/image_raw
-    camera_info_topic: /camera/camera/color/camera_info
+    #
+    # These match aries_bringup's own driver (aries_hardware.launch.py's
+    # _realsense_driver sets camera_namespace:="" and camera_name:="camera"),
+    # which is how the rover actually runs. A standalone
+    # `ros2 launch realsense2_camera rs_launch.py` instead leaves
+    # camera_namespace at its "camera" default and publishes the DOUBLED
+    # /camera/camera/... form -- override these three if you bring the camera
+    # up that way.
+    #
+    # FRONT camera, not the wrist one. With two D435i units plugged in, a
+    # standalone launch claims whichever enumerates first, and the wrist camera
+    # frequently wins -- pin front_camera_serial (see full_hardware.launch.py).
+    # camera_offset_* below describes the FRONT mount; pointed at the wrist
+    # camera, every fix is wrong by the difference between the two mounts.
+    color_topic: /camera/color/image_raw
+    depth_topic: /camera/aligned_depth_to_color/image_raw
+    camera_info_topic: /camera/color/camera_info
 
-    # Rover's current fused heading, used ONLY to rotate the camera-relative
-    # (forward, left) offset into the global frame before adding it to a
-    # landmark's known position -- read-only, never written back. Must be
-    # the EKF's output, not raw wheel odometry (its encoder yaw is untrusted,
-    # see rover_nav/config/ekf_config.yaml). No fix is published for frames
-    # before the first message arrives on this topic.
-    odom_topic: /odometry/filtered
+    # Heading source. The rover's map-frame heading is looked up per sighting
+    # as map -> base_frame through TF, NOT read off /odometry/filtered: that
+    # topic's yaw is in the ODOM frame, and odom is rotated from map by
+    # rover_nav's MAP_TO_ODOM_YAW_DEG -- a number re-measured for every run
+    # from how the rover is actually parked (90 nose-along-map-+Y, but 70 or
+    # 120 if parked otherwise). Using odom yaw as global yaw rotates every fix
+    # about its landmark by that angle: 4.2 m of error at the 3 m range cap
+    # for a 90 degree mismatch. Going through TF composes map->odom and
+    # odom->base_footprint automatically, so changing MAP_TO_ODOM_YAW_DEG to
+    # anything needs no change here. No fix is published while the transform
+    # is unavailable.
+    map_frame: map
+    base_frame: base_footprint
+    tf_timeout_s: 0.1
 
     # ERC spec nominal marker size is 150mm -- measure your actual
     # printout, since every reported position scales linearly with this.

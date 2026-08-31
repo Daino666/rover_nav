@@ -109,6 +109,101 @@ def generate_launch_description():
             ),
         ),
         DeclareLaunchArgument(
+            "lookahead_distance",
+            default_value="0.5",
+            description=(
+                "Pure-pursuit lookahead (m). cmd_vel_arbiter reads this ONCE at "
+                "construction, so `ros2 param set` on the running node reports success "
+                "and changes nothing -- it has to be given here. Raise it when the "
+                "follower has to absorb a step change in position, e.g. an ArUco pose "
+                "snap: measured on hardware, a 1.1 m snap at 0.5 m lookahead pinned "
+                "curvature to the 2.0 clamp and the rover circled instead of rejoining "
+                "the path, while 1.5 m handled it cleanly. Default 0.6 m tracks the "
+                "path tightly; note a 0.7 m ArUco snap then asks for curvature 3.9, "
+                "above the 2.0 clamp, so raise this if snap recovery matters."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "local_planner",
+            default_value="false",
+            choices=["true", "false"],
+            description=(
+                "Add the local planner layer (rover_nav/local_planner.py). It watches "
+                "the global route cmd_vel_arbiter is chasing and, when an obstacle from "
+                "/obstacles/array sits on it, publishes a detour on /local_plan for the "
+                "arbiter to drive instead, handing the global route back once past. "
+                "Replaces the /obstacle_detected stop-gate with /local_plan/hold, which "
+                "fails closed the same way. Needs the detection pipeline running "
+                "(rover_nav/obstacle_detection.launch.py) -- without it the planner "
+                "holds rather than assuming the way is clear."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "rover_length", default_value="0.95",
+            description=(
+                "Rover footprint length (m), local_planner only. With rover_width it "
+                "sets the footprint disc, hypot(L/2, W/2), that every detour clearance "
+                "is derived from. MEASURE the real rover before a real run."
+            ),
+        ),
+        DeclareLaunchArgument("rover_width", default_value="0.75"),
+        DeclareLaunchArgument(
+            "min_distance", default_value="0.6",
+            description=(
+                "Live clearance (m) from the footprint to an obstacle's surface at which "
+                "the local planner abandons the detour, stops and reverses to "
+                "safe_distance before replanning on the other side."
+            ),
+        ),
+        DeclareLaunchArgument("safe_distance", default_value="1.0"),
+        DeclareLaunchArgument(
+            "obstacle_stop_enabled",
+            default_value="true",
+            description=(
+                "Gate motion on /obstacle_detected. Fails CLOSED: with this true and "
+                "nothing publishing that topic, cmd_vel_arbiter holds forever rather "
+                "than driving blind -- which is correct, but looks exactly like a stuck "
+                "rover if you are not reading its log. Set false for a controlled test "
+                "with no obstacle pipeline running (the node then warns loudly that "
+                "forward obstacles will not stop it), or start "
+                "rover_nav/obstacle_detection.launch.py alongside."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "start_aruco",
+            default_value="false",
+            description=(
+                "Start the ArUco landmark localization pipeline: the detector "
+                "(rover_detection/aruco_detect_roverpos) and the pose corrector "
+                "(aruco_pose_reset). REQUIRES the front camera -- pass "
+                "enable_front_camera:=true front_camera_serial:=<serial>, or the "
+                "detector sits waiting on topics nothing publishes. The wrist "
+                "camera is NOT interchangeable here: camera_offset_* in "
+                "aruco_localization_params.yaml describes the front mount."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "aruco_snap",
+            default_value="false",
+            description=(
+                "Let aruco_pose_reset actually call /set_pose on a landmark sighting, "
+                "overwriting the EKF's accumulated drift with the landmark-derived "
+                "position. Default false runs it in observe-only mode: it logs every "
+                "correction it WOULD make and touches nothing, which is how to check "
+                "the fixes are sane before letting them move the rover."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "aruco_start_point",
+            default_value="S1",
+            description=(
+                "Which survey start line the rover is on. Published once at startup as "
+                "a seed (landmark_id=-1) so consumers have something before the first "
+                "real sighting; never repeated, and ignored by aruco_pose_reset unless "
+                "accept_startup_seed is set."
+            ),
+        ),
+        DeclareLaunchArgument(
             "map_to_odom_x", default_value="",
             description="map->odom x offset (m). Empty keeps MAP_TO_ODOM_X from "
                         "global_path_planner.py.",
@@ -273,6 +368,74 @@ def generate_launch_description():
                     LaunchConfiguration("waypoints_csv"), value_type=str),
                 "path_frame": ParameterValue(
                     LaunchConfiguration("path_frame"), value_type=str),
+                "obstacle_stop_enabled": ParameterValue(
+                    LaunchConfiguration("obstacle_stop_enabled"), value_type=bool),
+                "local_plan_enabled": ParameterValue(
+                    LaunchConfiguration("local_planner"), value_type=bool),
+                "lookahead_distance": ParameterValue(
+                    LaunchConfiguration("lookahead_distance"), value_type=float),
+            }],
+        ),
+
+        # The local planner layer. Deliberately a separate node that never
+        # publishes /cmd_vel: cmd_vel_arbiter refuses to drive if a second
+        # publisher appears there, which is what keeps exactly one owner of the
+        # motors. This one publishes geometry (/local_plan) and intent
+        # (/local_plan/hold), and the arbiter above executes it.
+        Node(
+            condition=IfCondition(LaunchConfiguration("local_planner")),
+            package="rover_nav",
+            executable="local_planner.py",
+            name="local_planner",
+            output="screen",
+            parameters=[{
+                "rover_length": ParameterValue(
+                    LaunchConfiguration("rover_length"), value_type=float),
+                "rover_width": ParameterValue(
+                    LaunchConfiguration("rover_width"), value_type=float),
+                "min_distance": ParameterValue(
+                    LaunchConfiguration("min_distance"), value_type=float),
+                "safe_distance": ParameterValue(
+                    LaunchConfiguration("safe_distance"), value_type=float),
+            }],
+        ),
+
+        # ArUco landmark localization. Two nodes, deliberately separate:
+        #   aruco_detect_roverpos  sees a marker -> publishes a map-frame position
+        #   aruco_pose_reset       takes that position -> /set_pose on the EKF
+        # Splitting them keeps "where am I" measurable on its own (run the
+        # detector alone and watch the fixes) from "act on it", which is the
+        # part that moves the rover's estimate and wants to be trusted first.
+        #
+        # The corrector SNAPS rather than fuses: wheel odometry drifts without
+        # bound, a landmark sighting does not, so the sighting overwrites the
+        # estimate instead of being averaged into it. Fusing would need a
+        # covariance nobody has measured for this pipeline yet.
+        Node(
+            condition=IfCondition(LaunchConfiguration("start_aruco")),
+            package="rover_detection",
+            executable="aruco_detect_roverpos",
+            name="aruco_localization_node",
+            output="screen",
+            parameters=[
+                PathJoinSubstitution([
+                    FindPackageShare("rover_detection"),
+                    "config",
+                    "aruco_localization_params.yaml",
+                ]),
+                {"start_point": ParameterValue(
+                    LaunchConfiguration("aruco_start_point"), value_type=str)},
+            ],
+        ),
+        Node(
+            condition=IfCondition(LaunchConfiguration("start_aruco")),
+            package="rover_detection",
+            executable="aruco_pose_reset",
+            name="aruco_pose_reset",
+            output="screen",
+            parameters=[{
+                "enabled": ParameterValue(
+                    LaunchConfiguration("aruco_snap"), value_type=bool),
             }],
         ),
 
