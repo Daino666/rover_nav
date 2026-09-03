@@ -1,0 +1,15 @@
+ros2 launch aries_bringup full_hardware.launch.py \
+  path_csv:=$HOME/jazzy_ws/marsyard/w1w3w9w5_loop.csv \
+  waypoints_csv:=$HOME/jazzy_ws/marsyard/w1w3w9w5_loop_waypoints.csv \
+  pivots_csv:=$HOME/jazzy_ws/marsyard/w1w3w9w5_loop_pivots.csv \
+  map_to_odom_yaw_deg:=<measured on the day> \
+  stop_at_waypoints:=true \
+  enable_front_camera:=true front_camera_serial:=<your camera's serial> \
+  start_aruco:=true aruco_snap:=true aruco_start_point:=S1 \
+  obstacle_stop_enabled:=false
+
+
+ros2 run rover_nav wait_and_continue.py
+
+
+ros2 service call /planner/start std_srvs/srv/Trigger
