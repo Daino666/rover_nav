@@ -92,6 +92,8 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument("use_rover_joy_node", default_value="false"),
 
+        DeclareLaunchArgument("use_stacklight", default_value="true"),
+
         DeclareLaunchArgument(
             "start_pure_pursuit",
             default_value="true",
@@ -457,6 +459,22 @@ def generate_launch_description():
                 "drive_max_wheel_rps": LaunchConfiguration("drive_max_wheel_rps"),
                 "drive_wheel_accel_rps2": LaunchConfiguration("drive_wheel_accel_rps2"),
             }.items(),
+        ),
+
+        # Mast stack light: red on e-stop or halt, yellow operating, green
+        # ready. The publisher for the topic the drill Teensy's firmware has
+        # always subscribed to -- without it the light stays dark whatever the
+        # rover does. Reads the drive bringup's status, so it belongs on the
+        # rover side even though the Teensy is on the arm's.
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(
+                PathJoinSubstitution([
+                    FindPackageShare("aries_bringup"),
+                    "launch",
+                    "stacklight.launch.py",
+                ])
+            ),
+            condition=IfCondition(LaunchConfiguration("use_stacklight")),
         ),
 
         # Waypoint follower: publishes /cmd_vel directly, same as LB-gated teleop

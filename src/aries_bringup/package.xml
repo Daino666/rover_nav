@@ -27,6 +27,9 @@
   <exec_depend>rclpy</exec_depend>
   <exec_depend>sensor_msgs</exec_depend>
   <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>visualization_msgs</exec_depend>
+  <!-- stacklight_gz_visual.py: MaterialColor to gz's UserCommands. -->
+  <exec_depend>ros_gz_interfaces</exec_depend>
   <exec_depend>rover_nav</exec_depend>
   <exec_depend>odrive_can</exec_depend>
   <exec_depend>joy</exec_depend>

@@ -8,4 +8,5 @@
   <xacro:include filename="left_link.xacro"/>
   <xacro:include filename="right_link.xacro"/>
   <xacro:include filename="d435i.xacro"/>
+  <xacro:include filename="stacklight.xacro"/>
 </robot>
