@@ -52,6 +52,11 @@ def generate_launch_description():
             "map_to_odom_x": LaunchConfiguration("map_to_odom_x"),
             "map_to_odom_y": LaunchConfiguration("map_to_odom_y"),
             "map_to_odom_yaw_deg": LaunchConfiguration("map_to_odom_yaw_deg"),
+            "drive_command_timeout_s": LaunchConfiguration("drive_command_timeout_s"),
+            "drive_max_linear_mps": LaunchConfiguration("drive_max_linear_mps"),
+            "drive_max_angular_rps": LaunchConfiguration("drive_max_angular_rps"),
+            "drive_max_wheel_rps": LaunchConfiguration("drive_max_wheel_rps"),
+            "drive_wheel_accel_rps2": LaunchConfiguration("drive_wheel_accel_rps2"),
         }.items(),
     )
 
@@ -108,6 +113,20 @@ def generate_launch_description():
             DeclareLaunchArgument("imu_frame", default_value="imu_frame"),
             DeclareLaunchArgument(
                 "imu_topic", default_value="/microstrain/ekf/imu/data"
+            ),
+            DeclareLaunchArgument("drive_command_timeout_s", default_value="0.25"),
+            DeclareLaunchArgument("drive_max_linear_mps", default_value="0.45"),
+            DeclareLaunchArgument("drive_max_angular_rps", default_value="2.10"),
+            DeclareLaunchArgument("drive_max_wheel_rps", default_value="1.50"),
+            DeclareLaunchArgument(
+                "drive_wheel_accel_rps2", default_value="3.0",
+                description=(
+                    "ROS-side ramp limit (rev/s^2) on commanded wheel speed -- NOT an "
+                    "ODrive firmware setting. Lower = gentler/smoother acceleration "
+                    "(less likely to break wheels loose on loose terrain), higher = "
+                    "snappier response. Applied in cmd_vel_odrive_bridge.py's ramp(), "
+                    "independently per side."
+                ),
             ),
             rover,
         ]

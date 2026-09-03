@@ -51,6 +51,40 @@ class OdometryNode(Node):
         self.declare_parameter("slip_absolute_threshold_m", 0.004)
         self.declare_parameter("slip_relative_threshold", 0.35)
         self.declare_parameter("slip_covariance_multiplier", 10.0)
+        # robust_side_displacement only ever rejects a MINORITY of the 3
+        # wheels on a side disagreeing with each other -- if the rover is
+        # high-centered/wedged and all 6 wheels spin together in agreement
+        # (reported incident: wheels moving, rover not), there is no
+        # disagreement to catch and the median just integrates the agreed
+        # (fictional) motion as real. This is a SEPARATE check for that case:
+        # wheels reporting real speed while drawing unusually LOW current is
+        # the signature of spinning with little load (free-spinning/no
+        # traction), as opposed to a genuine stall (current pegged near the
+        # limit, speed near zero -- the opposite regime, already visible in
+        # odrive_fault_log.py's CURRENT_LIMIT_VIOLATION decoding).
+        #
+        # OFF by default and load_check_max_current_a has NO validated value
+        # yet -- there is no real telemetry from this rover to calibrate
+        # against. Run a normal drive with this off first and watch
+        # avg_current_a / moving_wheel_count on /wheel_odometry/slip_status
+        # (published unconditionally, whether or not the check is enabled)
+        # across both ordinary driving and a deliberately-induced stuck
+        # moment, to find a threshold that actually separates the two before
+        # turning this on -- do not guess a number and trust it blind.
+        self.declare_parameter("enable_load_check", False)
+        self.declare_parameter("load_check_min_speed_mps", 0.05)
+        self.declare_parameter("load_check_max_current_a", 3.0)
+        self.declare_parameter("load_check_min_moving_wheels", 5)
+        self.declare_parameter("load_check_covariance_multiplier", 50.0)
+        self.enable_load_check = bool(self.get_parameter("enable_load_check").value)
+        self.load_check_min_speed_mps = max(
+            0.0, float(self.get_parameter("load_check_min_speed_mps").value))
+        self.load_check_max_current_a = max(
+            0.0, float(self.get_parameter("load_check_max_current_a").value))
+        self.load_check_min_moving_wheels = int(
+            self.get_parameter("load_check_min_moving_wheels").value)
+        self.load_check_covariance_multiplier = max(
+            1.0, float(self.get_parameter("load_check_covariance_multiplier").value))
         self.slip_absolute_threshold_m = max(
             0.0,
             float(
@@ -124,11 +158,19 @@ class OdometryNode(Node):
         # Current encoder positions
         self.current_left_pos = [0.0, 0.0, 0.0]
         self.current_right_pos = [0.0, 0.0, 0.0]
+        # Per-wheel velocity (rev/s) and current (A) from the same
+        # ControllerStatus messages above -- for the load check only, not
+        # used in the odometry integration itself.
+        self.current_left_vel = [0.0, 0.0, 0.0]
+        self.current_right_vel = [0.0, 0.0, 0.0]
+        self.current_left_iq = [0.0, 0.0, 0.0]
+        self.current_right_iq = [0.0, 0.0, 0.0]
         self.encoder_seen = [False] * 6
         self.encoder_generation = [0] * 6
         self.last_used_generation = [0] * 6
         self.slip_detected = False
         self.suspected_slip_axes = []
+        self.load_slip_detected = False
         self.last_left_distances = [0.0] * 3
         self.last_right_distances = [0.0] * 3
         
@@ -179,10 +221,16 @@ class OdometryNode(Node):
             )
             return
         side, slot = side_slot
+        vel = float(msg.vel_estimate) if math.isfinite(msg.vel_estimate) else 0.0
+        iq = float(msg.iq_measured) if math.isfinite(msg.iq_measured) else 0.0
         if side == "right":
             self.current_right_pos[slot] = current_pos
+            self.current_right_vel[slot] = vel
+            self.current_right_iq[slot] = iq
         else:
             self.current_left_pos[slot] = current_pos
+            self.current_left_vel[slot] = vel
+            self.current_left_iq[slot] = iq
     
     def update_odometry(self):
         """Calculate and publish odometry at fixed rate"""
@@ -251,7 +299,30 @@ class OdometryNode(Node):
         self.suspected_slip_axes = sorted(suspected_axes)
         self.last_left_distances = left_distances
         self.last_right_distances = right_distances
-        
+
+        # All-wheels-agree load check (see enable_load_check's
+        # declare_parameter comment). Computed and published UNCONDITIONALLY
+        # -- avg_current_a/moving_wheel_count are the numbers to watch to
+        # pick load_check_max_current_a -- but only acted on (below, folded
+        # into covariance_scale) when enable_load_check is true.
+        wheel_speeds_mps = [
+            abs(v) * WHEEL_CIRCUMFERENCE
+            for v in self.current_left_vel + self.current_right_vel
+        ]
+        wheel_currents_a = [
+            abs(i) for i in self.current_left_iq + self.current_right_iq
+        ]
+        moving_wheel_count = sum(
+            1 for s in wheel_speeds_mps if s >= self.load_check_min_speed_mps
+        )
+        avg_current_a = (
+            sum(wheel_currents_a) / len(wheel_currents_a) if wheel_currents_a else 0.0
+        )
+        self.load_slip_detected = (
+            moving_wheel_count >= self.load_check_min_moving_wheels
+            and avg_current_a < self.load_check_max_current_a
+        )
+
         # Update previous positions
         self.prev_left_pos = self.current_left_pos.copy()
         self.prev_right_pos = self.current_right_pos.copy()
@@ -269,6 +340,10 @@ class OdometryNode(Node):
                         "right_median_delta_m": d_right,
                         "left_spread_m": left_spread,
                         "right_spread_m": right_spread,
+                        "load_check_enabled": self.enable_load_check,
+                        "load_slip_detected": self.load_slip_detected,
+                        "avg_current_a": avg_current_a,
+                        "moving_wheel_count": moving_wheel_count,
                     },
                     separators=(",", ":"),
                 )
@@ -278,6 +353,14 @@ class OdometryNode(Node):
             self.get_logger().warn(
                 "Wheel slip disagreement; median odometry rejected axes "
                 + ", ".join(str(axis) for axis in self.suspected_slip_axes),
+                throttle_duration_sec=1.0,
+            )
+        if self.enable_load_check and self.load_slip_detected:
+            self.get_logger().warn(
+                f"Load check: {moving_wheel_count}/6 wheels moving with only "
+                f"{avg_current_a:.2f} A average current (< "
+                f"{self.load_check_max_current_a:.2f} A) -- likely free-spinning "
+                f"together (stuck), de-weighting odometry",
                 throttle_duration_sec=1.0,
             )
         
@@ -349,9 +432,11 @@ class OdometryNode(Node):
         odom.twist.twist.angular.z = self.vth
         
         # Pose covariance
-        covariance_scale = (
-            self.slip_covariance_multiplier if self.slip_detected else 1.0
-        )
+        covariance_scale = 1.0
+        if self.slip_detected:
+            covariance_scale = max(covariance_scale, self.slip_covariance_multiplier)
+        if self.enable_load_check and self.load_slip_detected:
+            covariance_scale = max(covariance_scale, self.load_check_covariance_multiplier)
         odom.pose.covariance[0] = 0.01 * covariance_scale   # x
         odom.pose.covariance[7] = 0.01 * covariance_scale   # y
         odom.pose.covariance[14] = 1e6   # z (not measured)

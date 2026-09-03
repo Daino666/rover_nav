@@ -37,6 +37,7 @@ re-plans the same route, it does not start over. /draw_path/clear is the
 only way to start over.
 """
 
+import math
 import os
 import subprocess
 import sys
@@ -61,6 +62,17 @@ class DrawPath(Node):
         self.declare_parameter("coords", DEFAULT_COORDS)
         self.declare_parameter("name", "drawn_path")
         self.declare_parameter("frame_id", "map")
+        # Mouse clicks land close together (often ~1 m apart) -- much closer
+        # than minimum_turning_radius (1.5 m, a real wheel-scrub limit, not
+        # tunable per-route). Two consecutive points that close, needing a
+        # sharp heading change, in a narrow corridor, cannot be connected
+        # directly by a 1.5 m-radius planner -- it instead loops way out into
+        # open ground to build the turning room it needs. Measured on a real
+        # drawn route: 4 of 26 legs between raw clicks ballooned to
+        # 16-30 m each (vs ~1 m straight-line) this way. Dropping clicks
+        # closer than this to the last KEPT one before planning avoids
+        # forcing those tiny, tight legs in the first place.
+        self.declare_parameter("min_spacing_m", 1.5)
         # Hybrid-A* runs per LEG (one search per consecutive pair of clicked
         # points), each already bounded by nav2_planning_params.yaml's own
         # max_planning_time -- this is the ceiling on the whole subprocess,
@@ -72,6 +84,7 @@ class DrawPath(Node):
         self.name = str(self.get_parameter("name").value)
         self.frame_id = str(self.get_parameter("frame_id").value)
         self.planning_timeout = float(self.get_parameter("planning_timeout_s").value)
+        self.min_spacing = float(self.get_parameter("min_spacing_m").value)
 
         self.points = []  # ordered [(x, y), ...] clicked so far, map frame
 
@@ -143,10 +156,38 @@ class DrawPath(Node):
         self.get_logger().info(response.message)
         return response
 
+    def _decimate(self, points):
+        """Drop points closer than min_spacing_m to the last KEPT point --
+        always keeping the first and last so the route still starts and ends
+        exactly where drawn. See min_spacing_m's declare_parameter comment
+        for why this matters."""
+        if len(points) < 2 or self.min_spacing <= 0.0:
+            return list(points)
+        kept = [points[0]]
+        for p in points[1:-1]:
+            last = kept[-1]
+            if math.hypot(p[0] - last[0], p[1] - last[1]) >= self.min_spacing:
+                kept.append(p)
+        kept.append(points[-1])
+        return kept
+
     def _on_refine(self, request, response):
         if len(self.points) < 2:
             response.success = False
             response.message = f"need at least 2 clicked points, have {len(self.points)}"
+            self.get_logger().warn(response.message)
+            return response
+
+        route = self._decimate(self.points)
+        if len(route) != len(self.points):
+            self.get_logger().info(
+                f"decimated {len(self.points)} clicked points -> {len(route)} "
+                f"(min_spacing_m={self.min_spacing:.1f}); raise/lower it and refine "
+                f"again for more/less simplification"
+            )
+        if len(route) < 2:
+            response.success = False
+            response.message = "all clicked points collapsed under min_spacing_m -- click farther apart"
             self.get_logger().warn(response.message)
             return response
 
@@ -158,8 +199,8 @@ class DrawPath(Node):
         def fmt(xy):
             return f" {xy[0]:.3f},{xy[1]:.3f}"
 
-        start = fmt(self.points[0])
-        rest = [fmt(p) for p in self.points[1:]]
+        start = fmt(route[0])
+        rest = [fmt(p) for p in route[1:]]
 
         cmd = [
             "ros2", "run", "rover_nav", "plan_global_path.py",
@@ -168,7 +209,7 @@ class DrawPath(Node):
             "--coords", self.coords, "--publish",
         ]
         self.get_logger().info(
-            f"refining {len(self.points)} clicked points via Nav2: {' '.join(cmd)}"
+            f"refining {len(route)} points via Nav2: {' '.join(cmd)}"
         )
         try:
             result = subprocess.run(

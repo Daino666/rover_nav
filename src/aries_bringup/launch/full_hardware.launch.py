@@ -53,6 +53,23 @@ def generate_launch_description():
         DeclareLaunchArgument("start_rover", default_value="true"),
         DeclareLaunchArgument("rover_hardware_protocol", default_value="auto", choices=["auto", "odrive", "mock_hardware"]),
         DeclareLaunchArgument("can_interface", default_value="can0"),
+        DeclareLaunchArgument("drive_command_timeout_s", default_value="0.25"),
+        DeclareLaunchArgument("drive_max_linear_mps", default_value="0.45"),
+        DeclareLaunchArgument("drive_max_angular_rps", default_value="2.10"),
+        DeclareLaunchArgument("drive_max_wheel_rps", default_value="1.50"),
+        DeclareLaunchArgument(
+            "drive_wheel_accel_rps2", default_value="3.0",
+            description=(
+                "ROS-side ramp limit (rev/s^2) on commanded wheel speed -- NOT an "
+                "ODrive firmware setting (that lives on each ODrive's own flash, "
+                "current_soft_max/current_hard_max, not touched here). Lower = "
+                "gentler/smoother acceleration, less likely to break wheels loose on "
+                "loose terrain; higher = snappier response. This was declared several "
+                "launch files down (aries_drive/drive.launch.py) but never reachable "
+                "from here until 2026-09-03 -- previously the only way to change it "
+                "was editing that file's default directly."
+            ),
+        ),
         DeclareLaunchArgument("setup_rover_can", default_value="true"),
         DeclareLaunchArgument("drive_auto_arm", default_value="true"),
         DeclareLaunchArgument(
@@ -121,7 +138,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "lookahead_dynamic",
-            default_value="false",
+            default_value="true",
             choices=["true", "false"],
             description=(
                 "Widen the lookahead automatically instead of driving on a fixed "
@@ -133,15 +150,27 @@ def generate_launch_description():
                 "around the validated 0-0.7 m ArUco correction range -- see "
                 "cmd_vel_arbiter.py's own declare_parameter comments for the full "
                 "derivation. "
-                "DEFAULTED OFF (2026-09-03) for real-world testing of a fixed "
-                "0.5 m lookahead_distance instead -- flip back to true once that "
-                "test says whether the fixed value is good enough on its own."
+                "Back ON (2026-09-03): the finalized W1/W9/W3/W5 competition route "
+                "is tight and pivot-heavy (p90 curvature 1.43 1/m, p95 2.00 1/m -- "
+                "right at the planner's clamp), where a fixed lookahead has no way to "
+                "ease off before a corner. lookahead_curvature_gain below was retuned "
+                "for this route's real curvature at the same time."
             ),
         ),
         DeclareLaunchArgument("lookahead_min", default_value="0.4"),
         DeclareLaunchArgument("lookahead_max", default_value="0.7"),
         DeclareLaunchArgument("lookahead_error_gain", default_value="1.0"),
-        DeclareLaunchArgument("lookahead_curvature_gain", default_value="0.267"),
+        DeclareLaunchArgument(
+            "lookahead_curvature_gain", default_value="0.8",
+            description=(
+                "Retuned 2026-09-03 from 0.267 (calibrated against the old "
+                "MIN_TURNING_RADIUS=1.5m / 0.667 1/m test-course curvature) to 0.8 "
+                "(lookahead_min * new MIN_TURNING_RADIUS=0.5m's 2.0 1/m), matching the "
+                "much tighter curvature the current competition route actually drives. "
+                "See cmd_vel_arbiter.py's declare_parameter comment for the full "
+                "derivation and the retune formula if MIN_TURNING_RADIUS changes again."
+            ),
+        ),
         DeclareLaunchArgument(
             "local_planner",
             default_value="false",
@@ -282,6 +311,50 @@ def generate_launch_description():
             ),
         ),
         DeclareLaunchArgument(
+            "pivots_csv",
+            default_value="",
+            description=(
+                "The <name>_pivots.csv written alongside path_csv, ONLY when "
+                "plan_global_path.py needed an in-place pivot to connect two waypoints "
+                "(no arrival heading served both getting there and getting to the next "
+                "point). Optional -- most routes have none, and the file is only written "
+                "when at least one pivot is needed. When given, cmd_vel_arbiter stops and "
+                "physically rotates in place at each recorded joint instead of curving "
+                "through it. This is new (2026-09-03), untested on real hardware -- verify "
+                "at low speed on the bench before trusting it on a competition run."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "pivot_max_angular_rps", default_value="0.4",
+            description="Angular rate (rad/s) used while executing an in-place pivot.",
+        ),
+        DeclareLaunchArgument(
+            "pivot_tolerance_deg", default_value="3.0",
+            description="Heading error within which a pivot is considered done.",
+        ),
+        DeclareLaunchArgument(
+            "stop_at_waypoints",
+            default_value="false",
+            choices=["true", "false"],
+            description=(
+                "Stop at each waypoint in waypoints_csv (except the start and the "
+                "final/loop-closing point) and wait for a human to confirm before "
+                "continuing, instead of path_csv's normal drive-straight-through. Run "
+                "`ros2 run rover_nav wait_and_continue.py` in a separate terminal and "
+                "press Enter each time to send it on -- or call "
+                "`ros2 service call /planner/continue std_srvs/srv/Trigger` directly. "
+                "Stops at the CLOSEST APPROACH actually reached to each point (not a "
+                "fixed radius), so it lands as close as the real tracking error allows."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "waypoint_stop_margin_m", default_value="0.05",
+            description=(
+                "How far past a waypoint's closest approach (stop_at_waypoints only) "
+                "before treating it as passed and stopping."
+            ),
+        ),
+        DeclareLaunchArgument(
             "path_frame",
             default_value="map",
             choices=["map", "odom"],
@@ -378,6 +451,11 @@ def generate_launch_description():
                 "map_to_odom_x": LaunchConfiguration("map_to_odom_x"),
                 "map_to_odom_y": LaunchConfiguration("map_to_odom_y"),
                 "map_to_odom_yaw_deg": LaunchConfiguration("map_to_odom_yaw_deg"),
+                "drive_command_timeout_s": LaunchConfiguration("drive_command_timeout_s"),
+                "drive_max_linear_mps": LaunchConfiguration("drive_max_linear_mps"),
+                "drive_max_angular_rps": LaunchConfiguration("drive_max_angular_rps"),
+                "drive_max_wheel_rps": LaunchConfiguration("drive_max_wheel_rps"),
+                "drive_wheel_accel_rps2": LaunchConfiguration("drive_wheel_accel_rps2"),
             }.items(),
         ),
 
@@ -407,6 +485,16 @@ def generate_launch_description():
                     LaunchConfiguration("path_csv"), value_type=str),
                 "waypoints_csv": ParameterValue(
                     LaunchConfiguration("waypoints_csv"), value_type=str),
+                "pivots_csv": ParameterValue(
+                    LaunchConfiguration("pivots_csv"), value_type=str),
+                "pivot_max_angular_rps": ParameterValue(
+                    LaunchConfiguration("pivot_max_angular_rps"), value_type=float),
+                "pivot_tolerance_deg": ParameterValue(
+                    LaunchConfiguration("pivot_tolerance_deg"), value_type=float),
+                "stop_at_waypoints": ParameterValue(
+                    LaunchConfiguration("stop_at_waypoints"), value_type=bool),
+                "waypoint_stop_margin_m": ParameterValue(
+                    LaunchConfiguration("waypoint_stop_margin_m"), value_type=float),
                 "path_frame": ParameterValue(
                     LaunchConfiguration("path_frame"), value_type=str),
                 "obstacle_stop_enabled": ParameterValue(

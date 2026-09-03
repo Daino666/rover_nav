@@ -24,6 +24,7 @@ install(
     scripts/plan_global_path.py
     scripts/draw_path.py
     scripts/publish_survey_points.py
+    scripts/wait_and_continue.py
     scripts/preview_path.py
     scripts/test_path_loader.py
     scripts/test_path_viz.py

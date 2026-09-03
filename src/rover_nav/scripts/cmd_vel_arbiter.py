@@ -90,6 +90,10 @@ def quat_to_yaw(qx, qy, qz, qw):
     return math.atan2(siny_cosp, cosy_cosp)
 
 
+def wrap_angle(a):
+    return (a + math.pi) % (2 * math.pi) - math.pi
+
+
 def transform_point(point, tx, ty, yaw):
     """Apply a 2D rigid transform (translation + rotation) to a point."""
     x, y = point[0], point[1]
@@ -307,21 +311,19 @@ class CmdVelArbiter(Node):
         self.declare_parameter("lookahead_error_gain", 1.0)
         # curvature_cap = clamp(lookahead_min, lookahead_max,
         #                        lookahead_curvature_gain / kappa_ahead).
-        # Calibrated against MIN_TURNING_RADIUS in plan_global_path.py (1.5 m,
-        # i.e. kappa 0.667 1/m) -- what the Hybrid-A* planned paths this
-        # follower actually drives top out at -- NOT this node's own
-        # max_curvature (2.0 1/m / 0.5 m radius), which is a control-loop
-        # safety clamp the planned paths never approach. Confirmed against
-        # marsyard/loop4_rot270.csv's real curvature profile (max 0.672 1/m):
-        # gain=1.0 (tuned to max_curvature) never engaged the cap anywhere on
-        # that route at all. lookahead_min * 0.667 = 0.4 * 0.667 = 0.267 puts
-        # the cap at exactly lookahead_min at that path's tightest curvature;
-        # sampled along the same route this lands the cap at lookahead_max
-        # ~67% of the way (straights), lookahead_min ~11% (the tightest
-        # turns), smoothly in between elsewhere. Retune (same formula:
-        # lookahead_min * 0.667) if lookahead_min itself changes again, or if
-        # max_curvature/MIN_TURNING_RADIUS change.
-        self.declare_parameter("lookahead_curvature_gain", 0.267)
+        # Calibrated against MIN_TURNING_RADIUS in plan_global_path.py -- what
+        # the Hybrid-A* planned paths this follower actually drives top out
+        # at. Retuned 2026-09-03 after MIN_TURNING_RADIUS dropped 1.5 -> 0.5 m
+        # (kappa 0.667 -> 2.0 1/m) for the hand-drawn/pivot-heavy routes:
+        # the old 0.267 was calibrated against marsyard/loop4_rot270.csv's
+        # gentle 0.672 1/m max, and the W1/W9/W3/W5 competition route now
+        # routinely sits at the new, much tighter clamp -- measured p90 1.43,
+        # p95 2.00 1/m (pivot joints excluded). lookahead_min * 2.0 = 0.4 *
+        # 2.0 = 0.8 puts the cap at exactly lookahead_min at that ceiling,
+        # same formula as before with the new kappa. Retune again (same
+        # formula: lookahead_min * (1.0 / MIN_TURNING_RADIUS)) if lookahead_min
+        # changes, or if max_curvature/MIN_TURNING_RADIUS change again.
+        self.declare_parameter("lookahead_curvature_gain", 0.8)
         # How far ahead (arc length along the route, metres) to sample
         # curvature from -- anticipatory, not reactive. Set to lookahead_max's
         # default: the region a full-length lookahead arc would actually try
@@ -331,6 +333,32 @@ class CmdVelArbiter(Node):
         self.declare_parameter("path_csv", "")
         self.declare_parameter("path_frame", "map")
         self.declare_parameter("waypoints_csv", "")
+        # Optional <name>_pivots.csv from plan_global_path.py: joints where no
+        # arrival heading served both getting there and getting to the next
+        # point, so the route needs the rover to physically stop and rotate
+        # in place rather than curve through. Pure pursuit alone cannot do
+        # this -- it always drives forward at base_velocity while turning
+        # (see calc_curvature/angular below) -- so _pending_pivot() overrides
+        # it with a pure rotation (linear=0) until the heading is reached.
+        # Empty (default): no pivots, path_csv drives exactly as before.
+        self.declare_parameter("pivots_csv", "")
+        self.declare_parameter("pivot_max_angular_rps", 0.4)
+        self.declare_parameter("pivot_tolerance_deg", 3.0)
+        # Stop-and-wait mode: path_csv normally drives straight through with
+        # no stops (see _drive_test_path's docstring) -- this overrides that
+        # for competition runs that need a human confirmation between
+        # waypoints. Needs waypoints_csv (the named stop points); the START
+        # row and the final/loop-closing point are never stop-and-wait
+        # points -- the rover is already there at t=0 for the first, and the
+        # existing goal-arrival logic (_finish_run) already handles the last.
+        self.declare_parameter("stop_at_waypoints", False)
+        # How far PAST a waypoint's closest approach (tracked continuously in
+        # cross_best, same measurement _finish_run reports) before treating
+        # it as "passed" and stopping -- not a radius to stop WITHIN, so
+        # "as close as possible" holds regardless of how much tracking error
+        # the run actually has, rather than picking a fixed tolerance that
+        # might never be reached.
+        self.declare_parameter("waypoint_stop_margin_m", 0.05)
 
         self.cmd_vel_topic = str(self.get_parameter("cmd_vel_topic").value)
         self.teleop_topic = str(self.get_parameter("teleop_topic").value)
@@ -381,6 +409,13 @@ class CmdVelArbiter(Node):
         self.path_csv = str(self.get_parameter("path_csv").value).strip()
         self.path_frame = str(self.get_parameter("path_frame").value).strip()
         self.waypoints_csv = str(self.get_parameter("waypoints_csv").value).strip()
+        self.pivots_csv = str(self.get_parameter("pivots_csv").value).strip()
+        self.pivot_max_angular_rps = float(self.get_parameter("pivot_max_angular_rps").value)
+        self.pivot_tolerance_rad = math.radians(
+            float(self.get_parameter("pivot_tolerance_deg").value))
+        self.stop_at_waypoints = bool(self.get_parameter("stop_at_waypoints").value)
+        self.waypoint_stop_margin_m = float(
+            self.get_parameter("waypoint_stop_margin_m").value)
 
         # ---- pose / drive state
         self.car_pos = None
@@ -428,6 +463,22 @@ class CmdVelArbiter(Node):
         self.cross_names = []
         self.cross_xy = []
         self.cross_best = []
+        # Raw (pre map->odom) pivots loaded from pivots_csv: (route_index, x,
+        # y, to_yaw_rad), route_index verbatim into path_points/route.
+        # self.pivots is the live, per-run queue built from these in
+        # _ensure_route -- transformed into odom, sorted by index, and popped
+        # off (in _pending_pivot) as each is completed. Kept separate from
+        # pivots_raw so a re-anchor (_on_start_srv resetting self.route)
+        # rebuilds the queue from the same source instead of resuming a
+        # half-consumed one from the previous run.
+        self.pivots_raw = []
+        self.pivots = []
+        # Stop-and-wait state. next_stop_idx indexes into cross_xy/cross_names
+        # -- starts at 1 to skip the START row (index 0), reset to 1 whenever
+        # _ensure_route (re)builds the route, same as cross_best.
+        self.next_stop_idx = 1
+        self.awaiting_continue = False
+        self.continue_requested = False
         self.route = None
         self.route_idx = 0
         self.run_finished = False
@@ -523,6 +574,7 @@ class CmdVelArbiter(Node):
 
         self.create_service(Trigger, "/planner/start", self._on_start_srv)
         self.create_service(Trigger, "/planner/stop", self._on_stop_srv)
+        self.create_service(Trigger, "/planner/continue", self._on_continue_srv)
 
         self.create_timer(1.0 / control_rate, self._control_loop)
 
@@ -705,6 +757,16 @@ class CmdVelArbiter(Node):
         response.message = "stopped"
         return response
 
+    def _on_continue_srv(self, request, response):
+        if not self.awaiting_continue:
+            response.success = False
+            response.message = "not currently waiting at a waypoint -- nothing to continue"
+        else:
+            self.continue_requested = True
+            response.success = True
+            response.message = f"continuing from {self.cross_names[self.next_stop_idx]}"
+        return response
+
     # ---------- /cmd_vel ownership ----------
 
     def _foreign_publishers(self):
@@ -829,6 +891,23 @@ class CmdVelArbiter(Node):
                 raise SystemExit(f"cannot read waypoints_csv '{self.waypoints_csv}': {exc}")
             self.cross_best = [float("inf")] * len(self.cross_xy)
 
+        if self.pivots_csv:
+            try:
+                with open(self.pivots_csv, newline="") as f:
+                    for r in _csv.DictReader(f):
+                        self.pivots_raw.append((
+                            int(r["route_index"]), float(r["x_m"]), float(r["y_m"]),
+                            float(r["to_yaw_rad"]),
+                        ))
+            except OSError as exc:
+                raise SystemExit(f"cannot read pivots_csv '{self.pivots_csv}': {exc}")
+            n_idx = len(self.path_points)
+            bad = [idx for idx, *_ in self.pivots_raw if not (0 <= idx < n_idx)]
+            if bad:
+                raise SystemExit(
+                    f"pivots_csv '{self.pivots_csv}' has route_index {bad} outside "
+                    f"path_csv's range [0, {n_idx - 1}] -- mismatched with path_csv?")
+
     def _ensure_route(self):
         """Place the loaded course into odom, once per run.
 
@@ -866,11 +945,29 @@ class CmdVelArbiter(Node):
                 self.route, self.route_goal = extend_past_goal(
                     self.route, self.goal_runout * self._runout_lookahead())
                 self.cross_xy = [transform_point(p, t.x, t.y, yaw) for p in self.cross_xy]
+                pivot_yaw_offset = yaw
             else:
                 self.route = [list(p) for p in self.path_points]
                 self.route, self.route_goal = extend_past_goal(
                     self.route, self.goal_runout * self._runout_lookahead())
+                pivot_yaw_offset = 0.0
             self.cross_best = [float("inf")] * len(self.cross_xy)
+            self.next_stop_idx = 1
+            self.awaiting_continue = False
+            self.continue_requested = False
+            # Pivots are keyed by route_index into path_points, which
+            # extend_past_goal only ever APPENDS after -- so those indices
+            # still point at the right pose in self.route post-extension.
+            # Sorted so _pending_pivot only ever has to look at [0].
+            self.pivots = sorted((
+                {"idx": idx, "target_yaw": wrap_angle(to_yaw + pivot_yaw_offset)}
+                for idx, _px, _py, to_yaw in self.pivots_raw
+            ), key=lambda p: p["idx"])
+            if self.pivots:
+                self.get_logger().info(
+                    f"{len(self.pivots)} in-place pivot(s) loaded from "
+                    f"{os.path.basename(self.pivots_csv)}"
+                )
             self.route_idx = 0
             self._last_seen_idx = None
             self._stuck_since = None
@@ -881,10 +978,15 @@ class CmdVelArbiter(Node):
             if self.cross_xy:
                 self.route_markers_pub.publish(test_path_viz.marker_msgs(
                     [(i, x, y) for i, (x, y) in enumerate(self.cross_xy)], stamp, "odom"))
+            stop_note = (
+                f"stopping at {max(len(self.cross_xy) - 2, 0)} of them, waiting for "
+                f"/planner/continue each time" if self.stop_at_waypoints
+                else "driving straight through -- no stops"
+            )
             self.get_logger().info(
                 f"global path '{os.path.basename(self.path_csv)}' ready in odom: "
                 f"{len(self.route)} poses, {path_length(self.route):.1f} m, "
-                f"{len(self.cross_xy)} waypoint(s) to cross. Driving straight through -- no stops.")
+                f"{len(self.cross_xy)} waypoint(s) to cross. {stop_note.capitalize()}.")
             return
 
         if self.test_path_anchor == "start_pose":
@@ -978,6 +1080,88 @@ class CmdVelArbiter(Node):
         best = min(range(lo, hi), key=lambda i: distance(self.car_pos, self.route[i]))
         self.route_idx = best
 
+    def _pending_pivot(self):
+        """Execute an in-place rotation if the route has one due at or before
+        route_idx and it isn't done yet. Returns True while pivoting -- the
+        caller should do nothing else this tick -- False once clear to resume
+        normal pure pursuit.
+
+        Only ever consults route_idx (the GLOBAL route), never local_idx: a
+        pivot is a property of the planned route's own joints, not something
+        a local-planner detour should trigger, so this is skipped entirely
+        while detouring (see the call site) rather than taught to reason
+        about a second index.
+
+        Pure pursuit cannot express this itself -- angular = curvature *
+        base_velocity is always paired with nonzero forward motion (see the
+        bottom of this method vs. this one's linear=0.0) -- so a route that
+        truly needs a stop-and-turn has no way to ask for it except this."""
+        if not self.pivots:
+            return False
+        nxt = self.pivots[0]
+        if self.route_idx < nxt["idx"]:
+            return False
+        err = wrap_angle(nxt["target_yaw"] - self.car_yaw)
+        if abs(err) <= self.pivot_tolerance_rad:
+            self.get_logger().info(
+                f"pivot complete: now facing {math.degrees(self.car_yaw):+.0f}deg "
+                f"(target {math.degrees(nxt['target_yaw']):+.0f}deg)")
+            self.pivots.pop(0)
+            return False
+        # Bang-bang, not proportional: a fixed rate is simpler to reason
+        # about and verify on the bench than tuning a gain for a maneuver
+        # that only runs a handful of times per competition run.
+        rate = math.copysign(self.pivot_max_angular_rps, err)
+        self._publish(0.0, rate)
+        self.get_logger().info(
+            f"pivoting in place: {math.degrees(self.car_yaw):+.0f}deg -> "
+            f"{math.degrees(nxt['target_yaw']):+.0f}deg (err {math.degrees(err):+.1f}deg)",
+            throttle_duration_sec=0.5)
+        return True
+
+    def _pending_waypoint_stop(self):
+        """Stop-and-wait mode (stop_at_waypoints:=true): halt at each named
+        waypoint in cross_xy/cross_names (skipping the START row at index 0
+        and the final/loop-closing point, see stop_at_waypoints's
+        declare_parameter comment) until /planner/continue is called.
+
+        "As close as possible" is measured the same way _finish_run reports
+        it -- cross_best[k], the smallest distance to waypoint k seen over
+        the whole approach, updated every tick in _record_tracking_error
+        (which MUST run before this each tick, see the call order in
+        _drive_test_path). Waiting for the rover to move waypoint_stop_margin_m
+        past that minimum, rather than testing a fixed radius, means this
+        stops at the true closest point reached whatever the real tracking
+        error turns out to be, instead of a tolerance that might never be
+        satisfied."""
+        if not self.stop_at_waypoints:
+            return False
+        if self.next_stop_idx >= len(self.cross_xy) - 1:
+            return False  # no interior stops left; final point is _finish_run's job
+
+        if self.awaiting_continue:
+            if not self.continue_requested:
+                self._publish(0.0, 0.0)
+                return True
+            name = self.cross_names[self.next_stop_idx]
+            self.get_logger().info(f"continuing from {name}")
+            self.awaiting_continue = False
+            self.continue_requested = False
+            self.next_stop_idx += 1
+            return False
+
+        k = self.next_stop_idx
+        d = distance(self.car_pos, self.cross_xy[k])
+        if self.cross_best[k] < float("inf") and d > self.cross_best[k] + self.waypoint_stop_margin_m:
+            self.awaiting_continue = True
+            self.get_logger().info(
+                f"reached {self.cross_names[k]} ({self.cross_best[k] * 100:.1f} cm closest "
+                f"approach) -- waiting for /planner/continue"
+            )
+            self._publish(0.0, 0.0)
+            return True
+        return False
+
     def _drive_test_path(self, now):
         """Continuous pure pursuit along the whole anchored course -- no
         per-waypoint stop-and-go (that is what _control_loop's waypoint branch
@@ -998,9 +1182,13 @@ class CmdVelArbiter(Node):
             return
 
         detouring = self.local_plan_enabled and self.local_route is not None
+        if not detouring and self._pending_pivot():
+            return
         if detouring:
             self._advance_global_idx()
         err = self._record_tracking_error()
+        if not detouring and self._pending_waypoint_stop():
+            return
 
         chase = self.local_route if detouring else self.route
         idx = self.local_idx if detouring else self.route_idx

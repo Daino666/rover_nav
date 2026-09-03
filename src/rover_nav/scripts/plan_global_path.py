@@ -42,7 +42,7 @@ DEFAULT_OUT_DIR = os.path.expanduser("~/jazzy_ws/marsyard")
 # minimum_turning_radius in config/nav2_planning_params.yaml -- this value only
 # drives the reporting below, so a mismatch silently mis-scores the path rather
 # than changing what gets planned.
-MIN_TURNING_RADIUS = 1.5
+MIN_TURNING_RADIUS = 0.5
 
 
 def load_survey_points(path):
@@ -303,7 +303,7 @@ def main():
         raise SystemExit("planner_server's compute_path_to_pose action never showed up -- "
                          "is nav2_planning.launch.py running?")
 
-    all_pts, all_yaw, leg_breaks = [], [], []
+    all_pts, all_yaw, leg_breaks, pivots = [], [], [], []
     cur_xy = start_xy
     # The first leg's start heading is a free variable: this is a skid-steer
     # rover, so it can pivot in place on the spot before setting off. Every
@@ -335,12 +335,26 @@ def main():
 
     for i, (label, goal_xy) in enumerate(route):
         poses = None
-        # Leg 0 may also vary where the rover points before it starts moving.
-        start_options = start_yaws if i == 0 else [cur_yaw]
+        goal_hs = heading_candidates(start_xy, route_xy, i)
+        if i == 0:
+            # Leg 0 may vary where the rover points before it starts moving
+            # at all -- an in-place pivot here needs no CSV encoding, the
+            # rover just starts facing the right way (see the note below).
+            candidates = [(sy, gy) for gy in goal_hs for sy in start_yaws]
+        else:
+            # Phase 1: keep chaining from the previous leg's actual arrival
+            # heading, exactly as before -- tried across every goal heading
+            # candidate first, so a route that already worked without a pivot
+            # still gets exactly that (no behaviour change for it).
+            candidates = [(cur_yaw, gy) for gy in goal_hs]
+            # Phase 2, fallback only: the previous arrival heading dead-ends
+            # every goal heading. Allow the rover to stop and rotate in place
+            # to a different departure heading instead of failing the route --
+            # recorded as a pivot below and physically executed by
+            # cmd_vel_arbiter.py's _pending_pivot at drive time.
+            candidates += [(sy, gy) for gy in goal_hs for sy in _sweep([cur_yaw])]
         planned_but_dead_ended = 0
-        for attempt, (syaw, yaw) in enumerate(
-                (sy, gy) for gy in heading_candidates(start_xy, route_xy, i)
-                for sy in start_options):
+        for attempt, (syaw, yaw) in enumerate(candidates):
             trial = plan_leg(cur_xy, syaw, goal_xy, yaw)
             if not trial:
                 continue
@@ -364,7 +378,17 @@ def main():
                 probe_yaw = 2.0 * math.atan2(tp.orientation.z, tp.orientation.w)
                 nxt_xy = route_xy[i + 1]
                 nxt_yaws = heading_candidates(start_xy, route_xy, i + 1)
-                if not any(plan_leg(probe_xy, probe_yaw, nxt_xy, ny) for ny in nxt_yaws):
+                reachable = any(plan_leg(probe_xy, probe_yaw, nxt_xy, ny) for ny in nxt_yaws)
+                if not reachable:
+                    # The next leg (i+1) isn't stuck with probe_yaw either --
+                    # it gets the same pivot fallback this leg does (see the
+                    # candidates construction above), so the probe needs to
+                    # check the same possibility or it rejects an arrival
+                    # heading that would actually be fine once the next leg
+                    # pivots before departing.
+                    reachable = any(plan_leg(probe_xy, sy, nxt_xy, ny)
+                                    for ny in nxt_yaws for sy in _sweep([probe_yaw]))
+                if not reachable:
                     planned_but_dead_ended += 1
                     continue
             poses = trial
@@ -372,6 +396,16 @@ def main():
             if i == 0 and abs(_wrap(syaw - natural_start)) > 1e-6:
                 print(f"    (pivot in place to {math.degrees(syaw):+.0f}deg before setting off "
                       f"-- the straight-line bearing could not reach this waypoint)")
+            elif i > 0 and abs(_wrap(syaw - cur_yaw)) > 1e-6:
+                # cur_yaw dead-ended every goal heading (phase 1 above), so
+                # the rover stops here and physically rotates to syaw before
+                # this leg's poses begin -- pivots[] records WHERE (the joint
+                # pose, already the last row written to all_pts) and the
+                # target heading; cmd_vel_arbiter.py executes the rotation.
+                pivots.append((len(all_pts) - 1, syaw))
+                print(f"    (pivot in place {math.degrees(_wrap(syaw - cur_yaw)):+.0f}deg to "
+                      f"{math.degrees(syaw):+.0f}deg before continuing -- no arrival heading "
+                      f"at the previous point could reach this one)")
             if attempt:
                 print(f"    (arriving on heading {math.degrees(yaw):+.0f}deg -- the preferred "
                       f"heading was not reachable, or dead-ended the next leg)")
@@ -397,11 +431,17 @@ def main():
                     f"  Try: a different order (--in-order lets you choose), dropping "
                     f"{nxt_label} from this leg's neighbourhood, or a smaller "
                     f"minimum_turning_radius in config/nav2_planning_params.yaml.")
+            pivot_note = (
+                "" if i == 0 else
+                " Every departure heading was tried too (an in-place pivot, not just "
+                "chaining from the previous leg's arrival) and none worked either --"
+                " this genuinely has no reachable connection at this radius, not just an"
+                " awkward heading chain."
+            )
             raise SystemExit(
-                f"leg {i+1} ({label}): no path found {where} at any candidate goal heading.\n"
+                f"leg {i+1} ({label}): no path found {where} at any candidate goal heading."
+                f"{pivot_note}\n"
                 f"  goal headings tried: {tried}\n"
-                f"  (the start pose is fixed by where the previous leg ended -- if that "
-                f"heading sits in a dead zone, no goal heading can rescue this leg)\n"
                 "A minimum turning radius can make a leg unplannable where a "
                 "zero-radius planner would succeed -- check the clearance around "
                 "this point, or lower minimum_turning_radius in "
@@ -437,6 +477,13 @@ def main():
 
     print()
     report_curvature(all_pts, 1.0 / MIN_TURNING_RADIUS)
+    if pivots:
+        # curvature_profile() estimates curvature from position samples alone
+        # and has no notion of a pivot -- a same-position, different-heading
+        # joint looks like an infinitely tight corner to it (near-zero
+        # radius), not a stop-and-rotate. Expected, not a planner violation.
+        print(f"  ({len(pivots)} of the tightest points above are recorded pivots -- the "
+              f"rover stops and rotates in place there, that is not a curvature violation)")
 
     os.makedirs(args.out_dir, exist_ok=True)
     csv_path = os.path.join(args.out_dir, f"{args.name}.csv")
@@ -459,6 +506,17 @@ def main():
         for lbl, (wx, wy) in zip(route_labels, route_xy):
             w.writerow([lbl, f"{wx:.4f}", f"{wy:.4f}"])
     print(f"  -> {wp_path}")
+
+    if pivots:
+        pivots_path = os.path.join(args.out_dir, f"{args.name}_pivots.csv")
+        with open(pivots_path, "w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(["route_index", "x_m", "y_m", "to_yaw_rad"])
+            for idx, to_yaw in pivots:
+                px, py = all_pts[idx]
+                w.writerow([idx, f"{px:.4f}", f"{py:.4f}", f"{to_yaw:.4f}"])
+        print(f"  -> {pivots_path}  ({len(pivots)} in-place pivot(s) -- pass this as "
+              f"pivots_csv to cmd_vel_arbiter.py / full_hardware.launch.py)")
 
     # How close the plan itself comes to each waypoint -- the floor on what the
     # rover can achieve, before any tracking error is added.

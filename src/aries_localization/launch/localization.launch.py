@@ -163,6 +163,10 @@ def _start_localization(context, *args, **kwargs):
                 executable="Odom.py",
                 name="odom_node",
                 output="screen",
+                parameters=[{
+                    "enable_load_check": LaunchConfiguration("enable_load_check"),
+                    "load_check_max_current_a": LaunchConfiguration("load_check_max_current_a"),
+                }],
             )
         )
     else:
@@ -256,6 +260,31 @@ def generate_launch_description():
         DeclareLaunchArgument("imu_port", default_value="/dev/microstrain_main"),
         DeclareLaunchArgument("imu_frame", default_value="imu_frame"),
         DeclareLaunchArgument("imu_topic", default_value="/microstrain/ekf/imu/data"),
+
+        # Odom.py's all-wheels-agree load check: OFF by default, and
+        # load_check_max_current_a has no validated value yet -- there is no
+        # real telemetry from this rover to calibrate it against. Watch
+        # avg_current_a / moving_wheel_count on /wheel_odometry/slip_status
+        # (published unconditionally) across a normal drive and a
+        # deliberately-induced stuck moment before enabling this for real.
+        # See Odom.py's enable_load_check declare_parameter comment.
+        DeclareLaunchArgument(
+            "enable_load_check", default_value="false",
+            description=(
+                "De-weight wheel odometry (inflate its EKF covariance) when most/all "
+                "wheels report speed while drawing unusually low current -- the "
+                "free-spinning-together signature robust_side_displacement's per-side "
+                "median cannot catch. UNVALIDATED -- see load_check_max_current_a."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "load_check_max_current_a", default_value="3.0",
+            description=(
+                "Placeholder, NOT yet calibrated against this rover's real current "
+                "draw. Watch avg_current_a on /wheel_odometry/slip_status during real "
+                "driving before trusting this value."
+            ),
+        ),
 
         DeclareLaunchArgument(
             "map_to_odom_x", default_value="",

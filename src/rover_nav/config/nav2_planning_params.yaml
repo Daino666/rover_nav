@@ -74,25 +74,41 @@ planner_server:
       max_on_approach_iterations: 1000
       max_planning_time: 5.0
 
-      # The curvature bound. 1.5 m, not the 2.0 m of MIN_SAFE_RADIUS in
+      # The curvature bound. 1.0 m, not the 2.0 m of MIN_SAFE_RADIUS in
       # scripts/test_paths/generate_test_paths.py.
       #
       # 2.0 m is where this rocker-bogie stops scrubbing its wheels against
       # each other's arcs -- a wear/slip threshold, not a mechanical limit
-      # (a skid-steer can pivot on the spot). Measured against this yard, 2.0 m
-      # is simply wider than the terrain allows: of the nine W markers only W2
-      # and W4 have 2 m of clearance anywhere within 3 m, so at 2.0 m the
-      # planner can only pass through the rest in a near-straight line. That
-      # makes whole routes unplannable for want of a turn -- W6 in particular
-      # must be entered heading west and left heading east, which no 2.0 m arc
-      # can do, so it cannot sit between two other waypoints or close a loop
-      # back to S1.
+      # (differential/skid steering can pivot on the spot, zero radius).
+      # Measured against this yard, 2.0 m is simply wider than the terrain
+      # allows: of the nine W markers only W2 and W4 have 2 m of clearance
+      # anywhere within 3 m, so at 2.0 m the planner can only pass through
+      # the rest in a near-straight line. That makes whole routes
+      # unplannable for want of a turn -- W6 in particular must be entered
+      # heading west and left heading east, which no 2.0 m arc can do.
       #
-      # 1.5 m still bounds curvature at 0.667 1/m -- against the 17.31 1/m
-      # (a 6 cm radius) the old SmacPlanner2D emitted, that is the same order
-      # of improvement -- while opening the corridors the yard actually has.
-      # The cost is more wheel scrub on the tightest arcs.
-      minimum_turning_radius: 1.5
+      # First relaxed to 1.5 m (curvature 0.667 1/m) to open those corridors,
+      # then to 1.0 m (curvature 1.0 1/m) for the hand-drawn-path workflow
+      # (draw_path.py): dense, tightly-turning drawn routes through narrow
+      # corridors otherwise forced the planner into wide loops just to stay
+      # inside a radius the corridor didn't have room for -- see
+      # rover_nav/README.md's draw-path section.
+      #
+      # Lowered to 0.5 m 2026-09-03 -- as tight as this can go. 0.5 m is not
+      # arbitrary: it is EXACTLY cmd_vel_arbiter.py's own max_curvature=2.0
+      # (1/0.5) pure-pursuit clamp, the tightest turn the live follower will
+      # ever execute. Going any tighter than that would let the planner hand
+      # the follower a curve it physically refuses to track at runtime (its
+      # own clamp caps it), recreating the exact "circles instead of
+      # following the plan" failure this bound exists to prevent -- so this
+      # is the floor, not a step toward zero.
+      #
+      # NOTE: this is still NOT a true in-place pivot. motion_model_for_search
+      # is DUBIN (forward-only, see below) -- Hybrid-A* keeps moving forward
+      # while turning even at this radius, it does not stop and spin. A real
+      # zero-radius pivot would need REEDS_SHEPP or a dedicated spin-in-place
+      # behaviour in cmd_vel_arbiter itself, neither of which this does.
+      minimum_turning_radius: 0.5
 
       # DUBIN = forward-only primitives. The rover drives at a constant
       # positive base_velocity and pure pursuit has no reverse gear, so
