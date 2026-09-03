@@ -14,7 +14,7 @@ what each one actually did.
 
     # on the real marsyard route, with rocks 5 m and 14 m along it
     ros2 run rover_nav tune_local_planner.py \\
-        --path ~/jazzy_ws/src/marsyard/global_path_hybrid.csv \\
+        --path ~/jazzy_ws/marsyard/global_path_hybrid.csv \\
         --start-yaw 1.8326 --rocks 5.0,14.0 \\
         --sweep cost_weight=0,3,8 --timeout 400
 
@@ -48,7 +48,7 @@ import sys
 import time
 
 HOME = os.path.expanduser("~")
-DEFAULT_PATH = f"{HOME}/jazzy_ws/src/marsyard/test_6m.csv"
+DEFAULT_PATH = f"{HOME}/jazzy_ws/marsyard/test_6m.csv"
 
 
 def declared_types(src):

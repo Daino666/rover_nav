@@ -1,7 +1,13 @@
 map_server:
   ros__parameters:
     use_sim_time: false
-    yaml_filename: "/home/hsm/jazzy_ws/src/marsyard/marsyard2026_occupancy.yaml"
+    # Static fallback only -- nav2_planning.launch.py overrides this with its
+    # portable `map_yaml` argument (defaults to <home>/jazzy_ws/marsyard/...,
+    # marsyard/ sits as a top-level sibling of src/, not inside it -- see
+    # "Fold Mars-rover, obstacle_detection, and marsyard data into this repo").
+    # This value only applies if map_server is started directly against this
+    # params file without going through that launch file.
+    yaml_filename: "/home/daino/jazzy_ws/marsyard/marsyard2026_occupancy.yaml"
     topic_name: "map"
     frame_id: "map"
 

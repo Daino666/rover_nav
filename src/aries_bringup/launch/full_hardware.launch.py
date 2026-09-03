@@ -112,17 +112,34 @@ def generate_launch_description():
             "lookahead_distance",
             default_value="0.5",
             description=(
-                "Pure-pursuit lookahead (m). cmd_vel_arbiter reads this ONCE at "
-                "construction, so `ros2 param set` on the running node reports success "
-                "and changes nothing -- it has to be given here. Raise it when the "
-                "follower has to absorb a step change in position, e.g. an ArUco pose "
-                "snap: measured on hardware, a 1.1 m snap at 0.5 m lookahead pinned "
-                "curvature to the 2.0 clamp and the rover circled instead of rejoining "
-                "the path, while 1.5 m handled it cleanly. Default 0.6 m tracks the "
-                "path tightly; note a 0.7 m ArUco snap then asks for curvature 3.9, "
-                "above the 2.0 clamp, so raise this if snap recovery matters."
+                "Pure-pursuit lookahead (m), used as the starting value before "
+                "lookahead_dynamic (on by default, see below) takes over every tick. "
+                "cmd_vel_arbiter reads this ONCE at construction, so `ros2 param set` on "
+                "the running node reports success and changes nothing -- it has to be "
+                "given here. Only matters on its own if lookahead_dynamic:=false."
             ),
         ),
+        DeclareLaunchArgument(
+            "lookahead_dynamic",
+            default_value="true",
+            choices=["true", "false"],
+            description=(
+                "Widen the lookahead automatically instead of driving on a fixed "
+                "lookahead_distance -- short on straights for tight tracking, wider "
+                "when cross-track error or upcoming curvature demands it. This is what "
+                "absorbs an ArUco pose snap: a fixed 0.5 m lookahead pinned curvature "
+                "to the 2.0 clamp on a 1.1 m snap and the rover circled instead of "
+                "rejoining the path. lookahead_min/lookahead_max below are tuned "
+                "around the validated 0-0.7 m ArUco correction range -- see "
+                "cmd_vel_arbiter.py's own declare_parameter comments for the full "
+                "derivation. Competition-day tuning should normally happen here, not "
+                "on lookahead_distance."
+            ),
+        ),
+        DeclareLaunchArgument("lookahead_min", default_value="0.4"),
+        DeclareLaunchArgument("lookahead_max", default_value="0.7"),
+        DeclareLaunchArgument("lookahead_error_gain", default_value="1.0"),
+        DeclareLaunchArgument("lookahead_curvature_gain", default_value="0.267"),
         DeclareLaunchArgument(
             "local_planner",
             default_value="false",
@@ -192,6 +209,28 @@ def generate_launch_description():
                 "correction it WOULD make and touches nothing, which is how to check "
                 "the fixes are sane before letting them move the rover."
             ),
+        ),
+        DeclareLaunchArgument(
+            "aruco_max_correction_m",
+            default_value="0.8",
+            description=(
+                "Sanity gate on aruco_pose_reset: refuse any single correction bigger "
+                "than this rather than snapping the rover to it. Default 0.8 m is the "
+                "field-validated 0-0.7 m correction range plus a little headroom -- "
+                "raise it deliberately if genuine drift ever exceeds that, and re-check "
+                "lookahead_max (above), which is tuned assuming corrections stay under "
+                "0.7 m."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "aruco_min_correction_m",
+            default_value="0.05",
+            description="Ignore corrections smaller than this -- below the pipeline's own noise floor.",
+        ),
+        DeclareLaunchArgument(
+            "aruco_min_interval_s",
+            default_value="2.0",
+            description="Minimum seconds between accepted snaps, so the corrector doesn't fight the path follower.",
         ),
         DeclareLaunchArgument(
             "aruco_start_point",
@@ -374,6 +413,16 @@ def generate_launch_description():
                     LaunchConfiguration("local_planner"), value_type=bool),
                 "lookahead_distance": ParameterValue(
                     LaunchConfiguration("lookahead_distance"), value_type=float),
+                "lookahead_dynamic": ParameterValue(
+                    LaunchConfiguration("lookahead_dynamic"), value_type=bool),
+                "lookahead_min": ParameterValue(
+                    LaunchConfiguration("lookahead_min"), value_type=float),
+                "lookahead_max": ParameterValue(
+                    LaunchConfiguration("lookahead_max"), value_type=float),
+                "lookahead_error_gain": ParameterValue(
+                    LaunchConfiguration("lookahead_error_gain"), value_type=float),
+                "lookahead_curvature_gain": ParameterValue(
+                    LaunchConfiguration("lookahead_curvature_gain"), value_type=float),
             }],
         ),
 
@@ -436,6 +485,12 @@ def generate_launch_description():
             parameters=[{
                 "enabled": ParameterValue(
                     LaunchConfiguration("aruco_snap"), value_type=bool),
+                "max_correction_m": ParameterValue(
+                    LaunchConfiguration("aruco_max_correction_m"), value_type=float),
+                "min_correction_m": ParameterValue(
+                    LaunchConfiguration("aruco_min_correction_m"), value_type=float),
+                "min_interval_s": ParameterValue(
+                    LaunchConfiguration("aruco_min_interval_s"), value_type=float),
             }],
         ),
 

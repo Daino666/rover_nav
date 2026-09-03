@@ -70,12 +70,17 @@ class ArucoPoseReset(Node):
         # often would keep restarting the filter's own settling and fight the
         # path follower, which sees every snap as a step change in position.
         self.declare_parameter('min_interval_s', 2.0)
-        # Sanity gate. A correction larger than this is far more likely to be a
-        # misdetection, a wrong landmark table entry, or a bad map->odom than a
-        # real drift of that size -- refuse it loudly rather than teleporting
-        # the rover mid-run. Raise it deliberately if genuine drift ever
-        # exceeds this.
-        self.declare_parameter('max_correction_m', 3.0)
+        # Sanity gate. Field-validated against the real global-planner run:
+        # genuine landmark corrections land in 0-0.7 m (see lookahead_max /
+        # lookahead_curvature_sample_m in cmd_vel_arbiter.py, tuned around
+        # that same 0.7 m ceiling). 0.8 m gives that a little headroom for
+        # measurement noise. A correction bigger than this is far more likely
+        # to be a misdetection, a wrong landmark table entry, or a bad
+        # map->odom than a real drift of that size -- refuse it loudly rather
+        # than teleporting the rover mid-run. Raise it deliberately if genuine
+        # drift ever exceeds this (and re-check lookahead_max, which was
+        # tuned assuming corrections stay under 0.7 m).
+        self.declare_parameter('max_correction_m', 0.8)
         # Ignore corrections smaller than this: below the pipeline's own noise
         # there is nothing to correct, and snapping anyway just adds jitter.
         self.declare_parameter('min_correction_m', 0.05)

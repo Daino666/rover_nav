@@ -37,7 +37,7 @@ car_global_axis = None
 # Path to follow: "x,y" rows in meters, same S1-origin world frame as
 # everything else (see plan_multi_point_tour.py / plan_path.py, which both
 # write exactly this format).
-PATH_CSV = os.path.expanduser("~/jazzy_ws/src/marsyard/marsyard2026_tour_waypoints.csv")
+PATH_CSV = os.path.expanduser("~/jazzy_ws/marsyard/marsyard2026_tour_waypoints.csv")
 path = []
 current_target_idx = 0
 

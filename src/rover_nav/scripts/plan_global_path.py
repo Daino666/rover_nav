@@ -33,10 +33,10 @@ import re
 import sys
 
 DEFAULT_COORDS = os.path.expanduser(
-    "~/jazzy_ws/src/marsyard/2026_MarsYard_3D_Model-20260812T165935Z-1-001/"
+    "~/jazzy_ws/marsyard/2026_MarsYard_3D_Model-20260812T165935Z-1-001/"
     "2026_MarsYard_3D_Model/Coordinates_MarsYard2026.txt")
-DEFAULT_MAP_YAML = os.path.expanduser("~/jazzy_ws/src/marsyard/marsyard2026_occupancy.yaml")
-DEFAULT_OUT_DIR = os.path.expanduser("~/jazzy_ws/src/marsyard")
+DEFAULT_MAP_YAML = os.path.expanduser("~/jazzy_ws/marsyard/marsyard2026_occupancy.yaml")
+DEFAULT_OUT_DIR = os.path.expanduser("~/jazzy_ws/marsyard")
 
 # The curvature the planner is configured to respect. Keep in step with
 # minimum_turning_radius in config/nav2_planning_params.yaml -- this value only

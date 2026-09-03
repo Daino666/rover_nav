@@ -36,7 +36,7 @@ Usage:
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.conditions import IfCondition
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch.substitutions import EnvironmentVariable, LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 
@@ -58,13 +58,24 @@ def generate_launch_description():
         description='Publish a fixed map->base_footprint transform (only for standalone planning; '
                     'set false when running alongside the sim + odom_tf_broadcaster.py)',
     )
+    # Portable stand-in for nav2_planning_params.yaml's static yaml_filename,
+    # which is necessarily one hardcoded machine's path. marsyard/ sits as a
+    # top-level sibling of src/ (see "Fold Mars-rover, obstacle_detection,
+    # and marsyard data into this repo"), same on every rover laptop as long
+    # as the workspace is checked out to ~/jazzy_ws.
+    map_yaml_arg = DeclareLaunchArgument(
+        'map_yaml',
+        default_value=PathJoinSubstitution(
+            [EnvironmentVariable('HOME'), 'jazzy_ws', 'marsyard', 'marsyard2026_occupancy.yaml']),
+        description='Occupancy map YAML to load. Override to point at a different map.',
+    )
 
     map_server_node = Node(
         package='nav2_map_server',
         executable='map_server',
         name='map_server',
         output='screen',
-        parameters=[params_file],
+        parameters=[params_file, {'yaml_filename': LaunchConfiguration('map_yaml')}],
     )
 
     planner_server_node = Node(
@@ -117,6 +128,7 @@ def generate_launch_description():
     return LaunchDescription([
         rviz_arg,
         static_tf_arg,
+        map_yaml_arg,
         static_tf_node,
         map_server_node,
         planner_server_node,

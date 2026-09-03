@@ -324,8 +324,8 @@ through, with no per-waypoint halt.
 ```
 ros2 run rover_nav plan_global_path.py --start S1 --points W5 W4 W3 W2 --in-order
 ros2 launch aries_bringup full_hardware.launch.py \
-  path_csv:=$HOME/jazzy_ws/src/marsyard/global_path_hybrid.csv \
-  waypoints_csv:=$HOME/jazzy_ws/src/marsyard/global_path_hybrid_waypoints.csv
+  path_csv:=$HOME/jazzy_ws/marsyard/global_path_hybrid.csv \
+  waypoints_csv:=$HOME/jazzy_ws/marsyard/global_path_hybrid_waypoints.csv
 ros2 service call /planner/start std_srvs/srv/Trigger
 ```
 
@@ -333,6 +333,62 @@ This is **not** the `WAYPOINTS` sequencer. That one drives to within
 `goal_tolerance` (0.5 m) of each point, halts for `halt_time`, then replans —
 the opposite of crossing through. `path_csv` mode reuses the continuous
 tracking built for the test courses instead.
+
+### Adding ArUco landmark correction on top
+
+`full_hardware.launch.py` is the one launch for competition day: it always
+has the global-path follower above available through `path_csv`, and can
+optionally layer ArUco landmark correction on top of it with `start_aruco`
+and `aruco_snap`. Both default to `false`, so the plain command above already
+*is* "global planner only, no ArUco" — nothing extra to pass for that case.
+
+```
+ros2 launch aries_bringup full_hardware.launch.py \
+  path_csv:=$HOME/jazzy_ws/marsyard/global_path_hybrid.csv \
+  waypoints_csv:=$HOME/jazzy_ws/marsyard/global_path_hybrid_waypoints.csv \
+  enable_front_camera:=true front_camera_serial:=<serial> \
+  start_aruco:=true aruco_snap:=true \
+  aruco_start_point:=S1 \
+  map_to_odom_yaw_deg:=90
+ros2 service call /planner/start std_srvs/srv/Trigger
+```
+
+`start_aruco:=true aruco_snap:=false` runs the detector and corrector in
+observe-only mode — every correction it *would* make is logged but nothing
+moves the rover, which is how to sanity-check the fixes on a new course
+before trusting them. See `rover_detection`'s `aruco_pose_reset` node
+docstring for why this snaps the EKF pose rather than fusing the landmark
+fix, and `aries_bringup/launch/full_hardware.launch.py`'s own
+`start_aruco`/`aruco_snap` argument descriptions for the camera requirements.
+
+### Competition day: what to actually tune
+
+Everything below is already set to validated defaults — this is a map of
+where each competition-day knob lives, not a to-do list. Re-tune only what
+the day's course or hardware actually demands.
+
+| Knob | Where | Default | Tune when |
+|---|---|---|---|
+| `map_to_odom_x/y/yaw_deg` | `full_hardware.launch.py` args | `0/0/90` (from `global_path_planner.py`) | **Every run.** Depends on exactly how the rover is parked at boot — see the tuning note in `scripts/global_path_planner.py`. 1 degree of yaw error is 35 cm at a waypoint 20 m out |
+| `aruco_start_point` | `full_hardware.launch.py` arg | `S1` | Whichever start line the rover is actually placed on |
+| `lookahead_min` / `lookahead_max` | `full_hardware.launch.py` args → `cmd_vel_arbiter.py` | `0.4` / `0.7` | Path-tracking tightness vs. recovery margin. `lookahead_max=0.7` is sized to the validated 0-0.7 m ArUco correction range — don't lower it if `start_aruco` is on, or a snap can pin curvature to the clamp and the rover circles instead of rejoining the path (see `cmd_vel_arbiter.py`'s `lookahead_dynamic` comments) |
+| `aruco_max_correction_m` | `full_hardware.launch.py` arg → `aruco_pose_reset` | `0.8` | Sanity gate on a single snap. Matches the validated 0-0.7 m range plus headroom; raise together with `lookahead_max` if genuine drift ever exceeds it, never alone |
+| `inflation_radius` / `cost_scaling_factor` | `config/nav2_planning_params.yaml`, `global_costmap.inflation_layer` | `1.0` / `3.0` | How far the planner stays from obstacles. Lower `cost_scaling_factor` (cost decays slower) or raise `inflation_radius` if planned paths run too close to rocks; the reverse if paths look unnecessarily indirect |
+| `minimum_turning_radius` | `config/nav2_planning_params.yaml`, `planner_server.GridBased` | `1.5` | The rocker-bogie wheel-scrub curvature bound for *this* yard's terrain — see the "Global planner" table above before changing; a wider value can make routes unplannable on tight legs (e.g. W6) |
+| `map_yaml` | `nav2_planning.launch.py` arg | `~/jazzy_ws/marsyard/marsyard2026_occupancy.yaml` | Only if the map moves off the standard path |
+
+One-command reference for the day, once `map_to_odom_yaw_deg` is measured and
+a route is planned:
+
+```
+ros2 launch aries_bringup full_hardware.launch.py \
+  path_csv:=<planned route csv> waypoints_csv:=<planned route waypoints csv> \
+  start_aruco:=true aruco_snap:=true aruco_start_point:=<S1..S9> \
+  map_to_odom_yaw_deg:=<measured>
+```
+
+Drop `start_aruco:=true aruco_snap:=true` (or leave them at their `false`
+default) to run the global planner alone, with no ArUco correction.
 
 Two differences from test-path mode:
 

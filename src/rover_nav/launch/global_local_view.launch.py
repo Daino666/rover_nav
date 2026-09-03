@@ -117,7 +117,7 @@ def generate_launch_description():
                               description=("Output basename. NOT global_path_hybrid by "
                                            "default, so a visualisation run cannot "
                                            "overwrite the route you plan to drive.")),
-        DeclareLaunchArgument("out_dir", default_value="~/jazzy_ws/src/marsyard"),
+        DeclareLaunchArgument("out_dir", default_value="~/jazzy_ws/marsyard"),
         DeclareLaunchArgument("sim", default_value="true",
                               description=("Fake rover + fake rocks, no hardware. "
                                            "false expects real odometry and detections.")),
