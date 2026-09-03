@@ -22,6 +22,12 @@ Visualization Manager:
         Value: /global_path/waypoints
         Durability Policy: Transient Local
       Enabled: true
+    - Class: rviz_default_plugins/MarkerArray
+      Name: Survey points (S/L/W)
+      Topic:
+        Value: /marsyard/survey_points
+        Durability Policy: Transient Local
+      Enabled: true
     - Class: rviz_default_plugins/TF
       Name: TF
       Show Names: true

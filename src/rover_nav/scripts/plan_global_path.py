@@ -63,7 +63,13 @@ def load_survey_points(path):
 
 
 def resolve(spec, survey):
-    """A waypoint is either a survey point name (W6) or a raw 'x,y' pair."""
+    """A waypoint is either a survey point name (W6) or a raw 'x,y' pair.
+
+    Stripped first: callers passing a negative x (e.g. draw_path.py) give it
+    a leading space so argparse doesn't mistake "-0.2,1.3" for an unknown
+    flag and drop it -- see _parse_optional's " " exemption in argparse's
+    own source. That space needs removing before the regex below runs."""
+    spec = spec.strip()
     if re.match(r"^-?\d+(\.\d+)?,-?\d+(\.\d+)?$", spec):
         x, y = (float(v) for v in spec.split(","))
         return f"({x:.1f},{y:.1f})", (x, y)

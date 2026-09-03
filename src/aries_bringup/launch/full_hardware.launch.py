@@ -121,7 +121,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "lookahead_dynamic",
-            default_value="true",
+            default_value="false",
             choices=["true", "false"],
             description=(
                 "Widen the lookahead automatically instead of driving on a fixed "
@@ -132,8 +132,10 @@ def generate_launch_description():
                 "rejoining the path. lookahead_min/lookahead_max below are tuned "
                 "around the validated 0-0.7 m ArUco correction range -- see "
                 "cmd_vel_arbiter.py's own declare_parameter comments for the full "
-                "derivation. Competition-day tuning should normally happen here, not "
-                "on lookahead_distance."
+                "derivation. "
+                "DEFAULTED OFF (2026-09-03) for real-world testing of a fixed "
+                "0.5 m lookahead_distance instead -- flip back to true once that "
+                "test says whether the fixed value is good enough on its own."
             ),
         ),
         DeclareLaunchArgument("lookahead_min", default_value="0.4"),

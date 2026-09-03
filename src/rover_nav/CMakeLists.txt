@@ -22,6 +22,8 @@ install(
     scripts/publish_global_path.py
     scripts/publish_test_path.py
     scripts/plan_global_path.py
+    scripts/draw_path.py
+    scripts/publish_survey_points.py
     scripts/preview_path.py
     scripts/test_path_loader.py
     scripts/test_path_viz.py

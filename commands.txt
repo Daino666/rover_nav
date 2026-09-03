@@ -1,62 +1,60 @@
-1. Plan the global route, visualize it, align it to how the rover is parked
+1. Make the global path
 
-# Bring up the planning stack (map + costmap + Hybrid-A* planner), with RViz
+
 ros2 launch rover_nav nav2_planning.launch.py rviz:=true
-
-# Plan the route (waypoints in visiting order; --loop if it needs to close back to start)
-ros2 run rover_nav plan_global_path.py --start S1 --points W5 W4 W3 W2 --in-order
-# writes ~/jazzy_ws/marsyard/global_path_hybrid.csv + _waypoints.csv + a .png preview
-RViz (still open from nav2_planning.launch.py) shows the raw plan on /unsmoothed_plan and the smoothed one on /plan_smoothed over the occupancy map — check it clears rocks and closes the loop the way you expect.
-
-"Shift" it — align the map-frame path to how the rover is actually parked, before trusting it to drive:
+ros2 run rover_nav plan_global_path.py --start S1 --points W7 W4 W9 W8 --loop --publish
 
 
-ros2 run rover_nav preview_path.py \
-  --path ~/jazzy_ws/marsyard/global_path_hybrid.csv \
-  --waypoints ~/jazzy_ws/marsyard/global_path_hybrid_waypoints.csv \
-  --frame map --yaw <your best guess, e.g. 90>
-This prints every waypoint as forward/left-right distances from the rover's nose — check it against the ground with a tape measure or by eye. If a waypoint prints "BEHIND the rover" but it's physically ahead, your --yaw guess is wrong; try another candidate until the printout matches reality. Whatever value works here is your map_to_odom_yaw_deg for step 2.
 
-2. Position and orientation of the rover
-
-# Correct the EKF's wandered yaw right before starting (position untouched)
-ros2 run rover_nav set_heading.py --ros-args -p heading_deg:=0.0
-Then launch the stack with the position/orientation you measured — map_to_odom_x/y is where the rover sits in the map frame (0,0 = parked on S1), map_to_odom_yaw_deg is the value preview_path.py confirmed:
+2. Run the rover WITH ArUco marker correction
 
 
 ros2 launch aries_bringup full_hardware.launch.py \
   path_csv:=$HOME/jazzy_ws/marsyard/global_path_hybrid.csv \
   waypoints_csv:=$HOME/jazzy_ws/marsyard/global_path_hybrid_waypoints.csv \
-  map_to_odom_x:=0.0 map_to_odom_y:=0.0 map_to_odom_yaw_deg:=90.0
-(Leave start_aruco/aruco_snap off for now — added in step 4.)
-
-3. Lookahead distance
-Dynamic lookahead is on by default and already tuned for the validated 0–0.7 m correction range, so normally you don't touch this. If the day's terrain demands retuning, add:
-
-
-  lookahead_min:=0.4 \
-  lookahead_max:=0.7 \
-  lookahead_error_gain:=1.0 \
-  lookahead_curvature_gain:=0.267
-Tighter tracking on straights → lower lookahead_min. More cutting on corners than you want → lower lookahead_max (but don't go below ~0.7 while ArUco correction is on, or a snap can pin the curvature clamp and the rover circles instead of rejoining the path).
-
-4. Correction rate for the ArUco markers
-Turn ArUco correction on and set how often/how much it's allowed to snap:
-
-
-ros2 launch aries_bringup full_hardware.launch.py \
-  path_csv:=$HOME/jazzy_ws/marsyard/global_path_hybrid.csv \
-  waypoints_csv:=$HOME/jazzy_ws/marsyard/global_path_hybrid_waypoints.csv \
-  map_to_odom_x:=0.0 map_to_odom_y:=0.0 map_to_odom_yaw_deg:=90.0 \
+  map_to_odom_yaw_deg:=90 \
   enable_front_camera:=true front_camera_serial:=<serial> \
-  start_aruco:=true aruco_snap:=true \
-  aruco_start_point:=S1 \
-  aruco_min_interval_s:=2.0 \
-  aruco_max_correction_m:=0.8
-aruco_min_interval_s — the correction rate: minimum seconds between accepted snaps (default 2.0s — raise it if snaps are fighting the path follower, lower it if corrections feel too sparse).
-aruco_max_correction_m — the correction size gate: refuses any single snap bigger than this (default 0.8m = your validated 0.7m ceiling + margin). Don't raise this without also raising lookahead_max in step 3.
-First run, do a dry check with aruco_snap:=false — it logs every correction it would make without moving the rover, so you can sanity-check the fixes before trusting them.
+  start_aruco:=true aruco_snap:=true
+  
 
-5. Go
+4. Run the rover WITHOUT ArUco marker correction
 
-ros2 service call /planner/start std_srvs/srv/Trigger
+
+ros2 launch aries_bringup full_hardware.launch.py \
+  path_csv:=$HOME/jazzy_ws/marsyard/global_path_hybrid.csv \
+  waypoints_csv:=$HOME/jazzy_ws/marsyard/global_path_hybrid_waypoints.csv \
+  map_to_odom_yaw_deg:=90 \
+  lookahead_dynamic:=false \
+  lookahead_distance:=0.5 
+
+6. Lookahead distance — dynamic vs. fixed
+Add these to any launch command above:
+
+
+lookahead_dynamic:=false lookahead_distance:=0.5     # fixed 0.5 m (current default)
+lookahead_dynamic:=true                              # dynamic (auto-adjusts 0.4–0.7 m)
+
+
+
+drawing the global path 
+
+Draw → refine → drive
+```
+ros2 launch rover_nav nav2_planning.launch.py rviz:=true
+ros2 run rover_nav draw_path.py
+```
+In RViz, use the Publish Point tool (already in nav2_path_view.rviz's toolbar) and click a rough route across the map, in order. A yellow line + orange dots track your clicks live on /draw_path/preview (already displayed).
+Refine it through the same costmap-aware, curvature-bounded Hybrid-A* planner as everything else:
+```
+ros2 service call /draw_path/refine std_srvs/srv/Trigger
+```
+This feeds your clicks to plan_global_path.py as an ordered point list and republishes the result on /pure_pursuit/path so you see the refined version immediately.
+Not happy with it? ```ros2 service call /draw_path/clear std_srvs/srv/Trigger``` and redraw.
+Happy? Drive it — the service response prints the exact command, or:
+
+```
+ros2 launch aries_bringup full_hardware.launch.py \
+  path_csv:=$HOME/jazzy_ws/marsyard/drawn_path.csv \
+  waypoints_csv:=$HOME/jazzy_ws/marsyard/drawn_path_waypoints.csv
+
+  ```

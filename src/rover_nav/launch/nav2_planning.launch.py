@@ -69,6 +69,12 @@ def generate_launch_description():
             [EnvironmentVariable('HOME'), 'jazzy_ws', 'marsyard', 'marsyard2026_occupancy.yaml']),
         description='Occupancy map YAML to load. Override to point at a different map.',
     )
+    survey_points_arg = DeclareLaunchArgument(
+        'survey_points', default_value='true',
+        description='Publish every S/L/W survey point (start lines, ArUco landmarks, '
+                    'waypoints) as labelled markers on /marsyard/survey_points, always '
+                    'visible regardless of whatever route is currently planned.',
+    )
 
     map_server_node = Node(
         package='nav2_map_server',
@@ -125,14 +131,24 @@ def generate_launch_description():
         condition=IfCondition(LaunchConfiguration('rviz')),
     )
 
+    survey_points_node = Node(
+        package='rover_nav',
+        executable='publish_survey_points.py',
+        name='publish_survey_points',
+        output='screen',
+        condition=IfCondition(LaunchConfiguration('survey_points')),
+    )
+
     return LaunchDescription([
         rviz_arg,
         static_tf_arg,
         map_yaml_arg,
+        survey_points_arg,
         static_tf_node,
         map_server_node,
         planner_server_node,
         smoother_server_node,
         lifecycle_manager_node,
         rviz_node,
+        survey_points_node,
     ])

@@ -44,6 +44,17 @@ Visualization Manager:
         Value: /global_path/waypoints
         Durability Policy: Transient Local
       Enabled: true
+    - Class: rviz_default_plugins/MarkerArray
+      Name: Survey points (S/L/W)
+      Topic:
+        Value: /marsyard/survey_points
+        Durability Policy: Transient Local
+      Enabled: true
+    - Class: rviz_default_plugins/MarkerArray
+      Name: Draw path preview
+      Topic:
+        Value: /draw_path/preview
+      Enabled: true
     - Class: rviz_default_plugins/TF
       Name: TF
       Show Names: true
@@ -61,6 +72,9 @@ Visualization Manager:
     Background Color: 255; 255; 255
   Tools:
     - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/PublishPoint
+      Topic:
+        Value: /clicked_point
   Value: true
   Views:
     Current:

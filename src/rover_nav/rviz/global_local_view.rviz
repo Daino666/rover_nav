@@ -40,6 +40,12 @@ Visualization Manager:
         Durability Policy: Transient Local
       Enabled: true
     - Class: rviz_default_plugins/MarkerArray
+      Name: Survey points (S/L/W)
+      Topic:
+        Value: /marsyard/survey_points
+        Durability Policy: Transient Local
+      Enabled: true
+    - Class: rviz_default_plugins/MarkerArray
       Name: Keepouts + camera cone
       Topic:
         Value: /local_plan/markers
