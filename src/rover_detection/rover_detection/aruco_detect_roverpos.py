@@ -78,32 +78,24 @@ DEPTH_SCALE_MM_TO_M = 0.001
 # ERC 2026 Mars Yard landmarks (L1-L15), keyed by ENCODED ArUco ID
 # (= 50 + printed sign number). Global frame: X=right, Y=front, meters.
 #
-# *** TEMPORARY TEST OVERRIDE (revert before any real use) ***
-# 51 (L1) is set for the hall lane-change test, replacing its real competition
-# survey value. Everything else, 54 (L4) included, holds its real surveyed
-# value. Original value of 51, for revert:
-#   51: (3.183, 8.012)
+# All values below are the real competition survey positions -- matches
+# tools/realsense_aruco_test_v3.py's copy and rover_nav's
+# Coordinates_MarsYard2026.txt (loaded independently by plan_global_path.py /
+# publish_survey_points.py; keep all in sync if the survey ever changes).
 #
-# The value below is NOT where the marker physically is -- it is deliberately
-# offset so the rover concludes it has drifted, and corrects. The rule:
-#
+# 51 (L1) previously carried a TEMPORARY TEST OVERRIDE for the hall
+# lane-change test (a deliberately wrong table entry so the rover concludes
+# it has drifted and corrects, used to validate the ArUco correction's
+# 0-0.7 m range -- see rover_nav/README.md's "Competition day" section).
+# Reverted to its real surveyed value 2026-09-03. To re-run that kind of
+# test, inject an error the same way:
 #     table_x = true_marker_x + (how far RIGHT you want the rover to think it is)
 #     table_y = true_marker_y
-#
 # The rover always steers the OPPOSITE way to the error it believes it has:
-# think you drifted right, correct left.
-#
-# Set for a marker standing at (0.0, 7.5) -- dead ahead on the path centreline,
-# 7.5 m along a 17 m run -- with a 0.7 m rightward error injected:
-#     table_x = 0.0 + 0.7 = +0.7
-# The rover then places itself at x = +0.7, believes it has drifted 0.7 m to
-# its right, and steers 0.7 m LEFT to rejoin the path. Move the marker to one
-# side and re-derive: a marker truly at x = +1.0 would need table_x = +1.7.
-# To reverse the direction, negate the injected term.
-#
-# Sign reminder: heading is map +Y, so map +X is the rover's RIGHT.
+# think you drifted right, correct left. Sign reminder: heading is map +Y, so
+# map +X is the rover's RIGHT. Revert to the real value before any real use.
 LANDMARKS_XY = {
-    51: (0.70, 7.50), 52: (7.269, 9.482), 53: (7.878, 17.583), 54: (9.225, 22.389),
+    51: (3.183, 8.012), 52: (7.269, 9.482), 53: (7.878, 17.583), 54: (9.225, 22.389),
     55: (3.518, 23.990), 56: (0.882, 16.870), 57: (-3.944, 21.415), 58: (-5.491, 16.334),
     59: (-7.695, 13.528), 60: (-1.610, 12.602), 61: (-7.715, 9.721), 62: (-4.311, 4.442),
     63: (-5.720, 28.118), 64: (-11.438, 5.230), 65: (6.483, 1.102),

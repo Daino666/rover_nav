@@ -2,8 +2,7 @@
 
 
 ros2 launch rover_nav nav2_planning.launch.py rviz:=true
-ros2 run rover_nav plan_global_path.py --start S1 --points W7 W4 W9 W8 --loop --publish
-
+  
 
 
 2. Run the rover WITH ArUco marker correction
