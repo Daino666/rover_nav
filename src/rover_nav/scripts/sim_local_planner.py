@@ -125,6 +125,12 @@ class SimRig(Node):
         m.pose.pose.position.y = self.y
         m.pose.pose.orientation.z = math.sin(self.yaw / 2.0)
         m.pose.pose.orientation.w = math.cos(self.yaw / 2.0)
+        # Twist was never populated -- cmd_vel_arbiter's pivot brake phase
+        # (_pending_pivot) reads car_speed off this to know when the rover
+        # has actually stopped, and would otherwise always see 0.0 here
+        # regardless of real commanded speed.
+        m.twist.twist.linear.x = self.v
+        m.twist.twist.angular.z = self.w
         self.odom_pub.publish(m)
 
     def _obs(self):

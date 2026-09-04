@@ -219,6 +219,12 @@ class CmdVelArbiter(Node):
         self.declare_parameter("odom_timeout_s", 0.5)
         self.declare_parameter("control_rate_hz", 20.0)
         self.declare_parameter("stuck_timeout_s", 3.0)
+        # Cross-track error above which the stuck recovery must NOT force the
+        # lookahead index forward -- see the guard in _drive_test_path. Sized
+        # at ~2x lookahead_max (0.7): inside that the rover is essentially on
+        # the path and merely grinding a corner, beyond it the rover is off
+        # the path and advancing the target only walks it further away.
+        self.declare_parameter("stuck_force_max_error_m", 1.5)
         self.declare_parameter("obstacle_stop_enabled", True)
         self.declare_parameter("obstacle_topic", "/obstacle_detected")
         self.declare_parameter("obstacle_timeout_s", 1.0)
@@ -313,17 +319,30 @@ class CmdVelArbiter(Node):
         #                        lookahead_curvature_gain / kappa_ahead).
         # Calibrated against MIN_TURNING_RADIUS in plan_global_path.py -- what
         # the Hybrid-A* planned paths this follower actually drives top out
-        # at. Retuned 2026-09-03 after MIN_TURNING_RADIUS dropped 1.5 -> 0.5 m
-        # (kappa 0.667 -> 2.0 1/m) for the hand-drawn/pivot-heavy routes:
-        # the old 0.267 was calibrated against marsyard/loop4_rot270.csv's
-        # gentle 0.672 1/m max, and the W1/W9/W3/W5 competition route now
-        # routinely sits at the new, much tighter clamp -- measured p90 1.43,
-        # p95 2.00 1/m (pivot joints excluded). lookahead_min * 2.0 = 0.4 *
-        # 2.0 = 0.8 puts the cap at exactly lookahead_min at that ceiling,
-        # same formula as before with the new kappa. Retune again (same
-        # formula: lookahead_min * (1.0 / MIN_TURNING_RADIUS)) if lookahead_min
-        # changes, or if max_curvature/MIN_TURNING_RADIUS change again.
-        self.declare_parameter("lookahead_curvature_gain", 0.8)
+        # at.
+        #
+        # 2026-09-03, twice in one day:
+        #   1.5 m radius (0.667 1/m): gain 0.267 (marsyard/loop4_rot270.csv,
+        #     max 0.672 1/m -- the cap almost never engaged on that route).
+        #   0.5 m radius (2.0 1/m): gain raised to 0.8 for the W1/W9/W3/W5
+        #     route (p95 2.00 1/m). This one made things WORSE, not better --
+        #     see MIN_TURNING_RADIUS's config/nav2_planning_params.yaml
+        #     comment for the full story: 0.5 m gave the PLANNER zero
+        #     tracking margin under this node's own max_curvature=2.0 clamp,
+        #     and the rover was observed in sim circling at points where the
+        #     path's own curvature was already pinned near 2.0, independent
+        #     of this gain. Fixing the margin (MIN_TURNING_RADIUS -> 0.7 m)
+        #     is what actually resolved it.
+        #   0.7 m radius (1.43 1/m): gain here retuned to match -- p95 1.429
+        #     1/m on the re-planned route (pivot joints excluded). lookahead_min
+        #     * 1.429 = 0.4 * 1.429 = 0.572 puts the cap at exactly
+        #     lookahead_min at that ceiling, same formula as always.
+        # Retune again (lookahead_min * (1.0 / MIN_TURNING_RADIUS)) if
+        # lookahead_min changes, or if max_curvature/MIN_TURNING_RADIUS
+        # change again -- and if the cap ever seems to be fighting recovery
+        # again, check MIN_TURNING_RADIUS's margin under max_curvature
+        # FIRST, not just this gain.
+        self.declare_parameter("lookahead_curvature_gain", 0.572)
         # How far ahead (arc length along the route, metres) to sample
         # curvature from -- anticipatory, not reactive. Set to lookahead_max's
         # default: the region a full-length lookahead arc would actually try
@@ -342,8 +361,50 @@ class CmdVelArbiter(Node):
         # it with a pure rotation (linear=0) until the heading is reached.
         # Empty (default): no pivots, path_csv drives exactly as before.
         self.declare_parameter("pivots_csv", "")
-        self.declare_parameter("pivot_max_angular_rps", 0.4)
+        # Lowered from 0.4 2026-09-04: real hardware wheels are slightly
+        # shaky/uneven, and a bang-bang rotation at 0.4 rad/s (~23 deg/s)
+        # visibly shook the rover during in-place pivots. This is closed-loop
+        # (see _pending_pivot below, checks car_yaw every tick against
+        # pivot_tolerance_deg) so a slower rate costs time, not accuracy --
+        # each control tick just takes a smaller angular step.
+        self.declare_parameter("pivot_max_angular_rps", 0.2)
         self.declare_parameter("pivot_tolerance_deg", 3.0)
+        # Brake to a real stop before starting to rotate. wheel_accel_rps2
+        # (cmd_vel_odrive_bridge.py) ramps each wheel toward its target
+        # independently -- it guarantees the FINAL differential matches what
+        # was commanded, not that it matches DURING the ramp. Going straight
+        # from "driving forward" to "rotate in place" asks both wheels to
+        # swap to opposite-signed targets at once; while they ramp there
+        # independently, the actual differential (and so the actual turn
+        # rate) doesn't match the commanded pivot, and the rover drifts/arcs
+        # instead of cleanly stopping first. Waiting here for measured speed
+        # to actually settle removes that ambiguous window instead of just
+        # shrinking it.
+        self.declare_parameter("pivot_brake_speed_mps", 0.03)
+        # How close the rover must get to a pivot point before the "have I
+        # passed the closest approach" test starts running. Same role as
+        # waypoint_stop_arm_radius_m: far from the point, "closest so far" is
+        # measuring noise rather than progress.
+        self.declare_parameter("pivot_arrive_radius_m", 2.0)
+        # Lookahead used while within waypoint_lookahead_radius_m of the next
+        # waypoint -- shorter than the cruising lookahead so pure pursuit cuts
+        # less of the corner at the points that are actually scored. See the
+        # L^2/2R note in _drive_test_path. 0.0 disables the whole behaviour.
+        self.declare_parameter("waypoint_lookahead_m", 0.35)
+        self.declare_parameter("waypoint_lookahead_radius_m", 2.0)
+        # How many route poses BEFORE a waypoint's own pose the stop may arm.
+        # Poses run ~0.175 m apart, so 20 is roughly the last 3.5 m of the
+        # approach -- comfortably more than waypoint_stop_arm_radius_m, while
+        # still excluding an earlier fly-past on a looping leg.
+        self.declare_parameter("waypoint_stop_arm_poses", 20)
+        # Distance from a waypoint at which pure pursuit stops chasing the path
+        # and aims straight at the waypoint itself, so it lands on the point
+        # instead of cutting the corner inside it. 0.0 disables.
+        self.declare_parameter("waypoint_final_approach_m", 1.0)
+        # Fallback only, in case the speed estimate never quite settles
+        # under the threshold (sensor noise/bias) -- proceed anyway rather
+        # than waiting forever.
+        self.declare_parameter("pivot_brake_timeout_s", 3.0)
         # Stop-and-wait mode: path_csv normally drives straight through with
         # no stops (see _drive_test_path's docstring) -- this overrides that
         # for competition runs that need a human confirmation between
@@ -359,6 +420,13 @@ class CmdVelArbiter(Node):
         # the run actually has, rather than picking a fixed tolerance that
         # might never be reached.
         self.declare_parameter("waypoint_stop_margin_m", 0.05)
+        # Don't evaluate "have we passed the closest approach" at all until
+        # within this radius -- see _pending_waypoint_stop's BUG FOUND IN SIM
+        # docstring note. Comfortably bigger than any real closest-approach
+        # distance (the plan itself lands within cm of every waypoint) and
+        # comfortably smaller than "still working through an earlier part of
+        # a multi-waypoint route."
+        self.declare_parameter("waypoint_stop_arm_radius_m", 2.0)
 
         self.cmd_vel_topic = str(self.get_parameter("cmd_vel_topic").value)
         self.teleop_topic = str(self.get_parameter("teleop_topic").value)
@@ -375,6 +443,8 @@ class CmdVelArbiter(Node):
         self.odom_timeout_s = float(self.get_parameter("odom_timeout_s").value)
         control_rate = max(1.0, float(self.get_parameter("control_rate_hz").value))
         self.stuck_timeout_s = float(self.get_parameter("stuck_timeout_s").value)
+        self.stuck_force_max_error_m = float(
+            self.get_parameter("stuck_force_max_error_m").value)
         self.test_path_name = coerce_name(self.get_parameter("test_path").value)
         self.test_path_anchor = str(self.get_parameter("test_path_anchor").value).strip()
         # Deliberately tighter than goal_tolerance. That one is sized for
@@ -413,13 +483,30 @@ class CmdVelArbiter(Node):
         self.pivot_max_angular_rps = float(self.get_parameter("pivot_max_angular_rps").value)
         self.pivot_tolerance_rad = math.radians(
             float(self.get_parameter("pivot_tolerance_deg").value))
+        self.pivot_brake_speed_mps = float(
+            self.get_parameter("pivot_brake_speed_mps").value)
+        self.pivot_arrive_radius_m = float(
+            self.get_parameter("pivot_arrive_radius_m").value)
+        self.waypoint_lookahead_m = float(
+            self.get_parameter("waypoint_lookahead_m").value)
+        self.waypoint_lookahead_radius_m = float(
+            self.get_parameter("waypoint_lookahead_radius_m").value)
+        self.waypoint_stop_arm_poses = int(
+            self.get_parameter("waypoint_stop_arm_poses").value)
+        self.waypoint_final_approach_m = float(
+            self.get_parameter("waypoint_final_approach_m").value)
+        self.pivot_brake_timeout_s = float(
+            self.get_parameter("pivot_brake_timeout_s").value)
         self.stop_at_waypoints = bool(self.get_parameter("stop_at_waypoints").value)
         self.waypoint_stop_margin_m = float(
             self.get_parameter("waypoint_stop_margin_m").value)
+        self.waypoint_stop_arm_radius_m = float(
+            self.get_parameter("waypoint_stop_arm_radius_m").value)
 
         # ---- pose / drive state
         self.car_pos = None
         self.car_yaw = None
+        self.car_speed = None
         self.last_odom_time = None
         self.drive_enabled = False
         self.drive_enabled_seen = False
@@ -461,8 +548,26 @@ class CmdVelArbiter(Node):
         # closest the rover's centre actually got to each one.
         self.path_points = None
         self.cross_names = []
+        # cross_xy_raw is the pristine map-frame waypoint list straight from
+        # waypoints_csv; cross_xy is the per-run copy placed into odom by
+        # _ensure_route. Same split as path_points/route and pivots_raw/pivots,
+        # and for the same reason -- _ensure_route runs AGAIN on every
+        # /planner/start (which sets self.route = None to re-anchor), so a
+        # transform that read cross_xy and wrote back to cross_xy applied
+        # map->odom a second time on the already-converted list.
+        #
+        # BUG FOUND IN SIM (2026-09-04): that is exactly what it did. With a
+        # 90deg map->odom yaw, waypoint (2.0, 10.3) landed at (-2.0, -10.3)
+        # instead of (10.3, -2.0) on the second pass, so the rover never came
+        # within waypoint_stop_arm_radius_m of any waypoint and NOT ONE
+        # stop_at_waypoints stop fired for a whole route. It also silently
+        # corrupted _finish_run's per-waypoint accuracy report and the RViz
+        # landmark markers, which are both derived from cross_xy.
+        self.cross_xy_raw = []
         self.cross_xy = []
         self.cross_best = []
+        self.cross_tangent = []
+        self.cross_idx = []
         # Raw (pre map->odom) pivots loaded from pivots_csv: (route_index, x,
         # y, to_yaw_rad), route_index verbatim into path_points/route.
         # self.pivots is the live, per-run queue built from these in
@@ -473,12 +578,17 @@ class CmdVelArbiter(Node):
         # half-consumed one from the previous run.
         self.pivots_raw = []
         self.pivots = []
+        self.pivot_braking = False
+        self.pivot_brake_since = None
+        self.pivot_arrival_armed = False
+        self.pivot_best_d = float("inf")
         # Stop-and-wait state. next_stop_idx indexes into cross_xy/cross_names
         # -- starts at 1 to skip the START row (index 0), reset to 1 whenever
         # _ensure_route (re)builds the route, same as cross_best.
         self.next_stop_idx = 1
         self.awaiting_continue = False
         self.continue_requested = False
+        self.waypoint_stop_armed = False
         self.route = None
         self.route_idx = 0
         self.run_finished = False
@@ -613,6 +723,7 @@ class CmdVelArbiter(Node):
         self.car_pos = [msg.pose.pose.position.x, msg.pose.pose.position.y]
         q = msg.pose.pose.orientation
         self.car_yaw = quat_to_yaw(q.x, q.y, q.z, q.w)
+        self.car_speed = msg.twist.twist.linear.x
         self.last_odom_time = time.monotonic()
 
     def _on_teleop(self, msg):
@@ -886,9 +997,10 @@ class CmdVelArbiter(Node):
                 with open(self.waypoints_csv, newline="") as f:
                     for r in _csv.DictReader(f):
                         self.cross_names.append(r["name"])
-                        self.cross_xy.append([float(r["x_m"]), float(r["y_m"])])
+                        self.cross_xy_raw.append([float(r["x_m"]), float(r["y_m"])])
             except OSError as exc:
                 raise SystemExit(f"cannot read waypoints_csv '{self.waypoints_csv}': {exc}")
+            self.cross_xy = [list(p) for p in self.cross_xy_raw]
             self.cross_best = [float("inf")] * len(self.cross_xy)
 
         if self.pivots_csv:
@@ -944,25 +1056,69 @@ class CmdVelArbiter(Node):
                 self.route = [transform_point(p, t.x, t.y, yaw) for p in self.path_points]
                 self.route, self.route_goal = extend_past_goal(
                     self.route, self.goal_runout * self._runout_lookahead())
-                self.cross_xy = [transform_point(p, t.x, t.y, yaw) for p in self.cross_xy]
+                # From cross_xy_RAW, never from cross_xy: this runs again on
+                # every /planner/start, and reading the already-converted list
+                # applied map->odom twice (see cross_xy_raw's comment above).
+                self.cross_xy = [transform_point(p, t.x, t.y, yaw)
+                                 for p in self.cross_xy_raw]
                 pivot_yaw_offset = yaw
+                pivot_t = (t.x, t.y)
             else:
                 self.route = [list(p) for p in self.path_points]
                 self.route, self.route_goal = extend_past_goal(
                     self.route, self.goal_runout * self._runout_lookahead())
+                self.cross_xy = [list(p) for p in self.cross_xy_raw]
                 pivot_yaw_offset = 0.0
+                pivot_t = None
             self.cross_best = [float("inf")] * len(self.cross_xy)
             self.next_stop_idx = 1
             self.awaiting_continue = False
             self.continue_requested = False
+            self.waypoint_stop_armed = False
+            # Unit path tangent at the route point nearest each waypoint.
+            # _pending_waypoint_stop uses it to ask "has the rover crossed the
+            # line through this waypoint, perpendicular to the path?" -- an
+            # exact geometric "am I past it" test.
+            #
+            # This replaces a "distance stopped improving" test that fired on
+            # ANY transient increase. On a curving approach the distance
+            # wobbles before the true minimum, so it stopped at the first local
+            # minimum: measured in sim, it halted 31 cm from W9 on a pass that
+            # actually reached 6.0 cm, and 52 cm from W3 on a pass that reached
+            # 28.8 cm. cross_best still records the true minimum for reporting.
+            self.cross_tangent = []
+            self.cross_idx = []
+            for wp in self.cross_xy:
+                best_i, best_d = 0, float("inf")
+                for i, p in enumerate(self.route):
+                    dd = distance(p, wp)
+                    if dd < best_d:
+                        best_d, best_i = dd, i
+                i0 = max(best_i - 1, 0)
+                i1 = min(best_i + 1, len(self.route) - 1)
+                tx = self.route[i1][0] - self.route[i0][0]
+                ty = self.route[i1][1] - self.route[i0][1]
+                n = math.hypot(tx, ty)
+                self.cross_tangent.append((tx / n, ty / n) if n > 1e-9 else (0.0, 0.0))
+                self.cross_idx.append(best_i)
             # Pivots are keyed by route_index into path_points, which
             # extend_past_goal only ever APPENDS after -- so those indices
             # still point at the right pose in self.route post-extension.
             # Sorted so _pending_pivot only ever has to look at [0].
+            # "xy" is the pivot point placed into odom the same way the route
+            # and cross_xy are -- _pending_pivot waits for the ROVER to reach
+            # it rather than firing when the lookahead index does.
             self.pivots = sorted((
-                {"idx": idx, "target_yaw": wrap_angle(to_yaw + pivot_yaw_offset)}
-                for idx, _px, _py, to_yaw in self.pivots_raw
+                {"idx": idx,
+                 "target_yaw": wrap_angle(to_yaw + pivot_yaw_offset),
+                 "xy": (transform_point([px, py], pivot_t[0], pivot_t[1], pivot_yaw_offset)
+                        if pivot_t is not None else [px, py])}
+                for idx, px, py, to_yaw in self.pivots_raw
             ), key=lambda p: p["idx"])
+            self.pivot_braking = False
+            self.pivot_brake_since = None
+            self.pivot_arrival_armed = False
+            self.pivot_best_d = float("inf")
             if self.pivots:
                 self.get_logger().info(
                     f"{len(self.pivots)} in-place pivot(s) loaded from "
@@ -1095,18 +1251,86 @@ class CmdVelArbiter(Node):
         Pure pursuit cannot express this itself -- angular = curvature *
         base_velocity is always paired with nonzero forward motion (see the
         bottom of this method vs. this one's linear=0.0) -- so a route that
-        truly needs a stop-and-turn has no way to ask for it except this."""
+        truly needs a stop-and-turn has no way to ask for it except this.
+
+        Two phases, tracked by pivot_braking. cmd_vel_odrive_bridge.py's
+        wheel_accel_rps2 ramps each wheel toward its target INDEPENDENTLY --
+        it guarantees the final differential matches what's commanded, not
+        that it matches during the ramp. Commanding the rotation immediately
+        while still carrying forward speed asks both wheels to swap to
+        opposite-signed targets at once; while they ramp there independently
+        the actual differential doesn't match the commanded pivot, and the
+        rover drifts/arcs instead of cleanly stopping first. So: brake and
+        wait for measured speed to actually settle (phase 1) before
+        commanding any rotation (phase 2), rather than trusting the ramp to
+        sort it out."""
         if not self.pivots:
             return False
         nxt = self.pivots[0]
         if self.route_idx < nxt["idx"]:
             return False
+
+        # route_idx is the LOOKAHEAD index -- it leads the rover by
+        # lookahead_distance. Firing the pivot the moment it reaches the pivot
+        # index therefore rotates the rover a full lookahead SHORT of the pivot
+        # point, and since the rover then departs on the new heading it never
+        # reaches that point at all.
+        #
+        # Measured in sim: the two pivot waypoints came out at 50.3 cm and
+        # 52.1 cm closest approach against 31.4 cm at the non-pivot waypoint --
+        # the ~20 cm difference is exactly this early trigger (lookahead runs
+        # 0.4-0.7 m). So wait for the ROVER to actually reach the pivot point:
+        # arm on approach, then fire once distance stops improving, i.e. at
+        # genuine closest approach. Same "passed the minimum" test as
+        # _pending_waypoint_stop, and for the same reason -- it lands as close
+        # as the tracking error of the day allows instead of at a fixed radius
+        # that might never be satisfied.
+        if not self.pivot_braking and nxt.get("xy") is not None:
+            d = distance(self.car_pos, nxt["xy"])
+            if not self.pivot_arrival_armed:
+                if d <= self.pivot_arrive_radius_m:
+                    self.pivot_arrival_armed = True
+                    self.pivot_best_d = d
+                else:
+                    return False  # still approaching -- keep driving the path
+            if d < self.pivot_best_d:
+                self.pivot_best_d = d
+                return False      # still closing on the point
+            if d <= self.pivot_best_d + self.waypoint_stop_margin_m:
+                return False      # inside the noise band, not yet past it
+            # Past the closest approach: this is the moment to stop and rotate.
+
+        if not self.pivot_braking:
+            speed = abs(self.car_speed) if self.car_speed is not None else 0.0
+            if self.pivot_brake_since is None:
+                self.pivot_brake_since = time.monotonic()
+            stopped = speed <= self.pivot_brake_speed_mps
+            timed_out = (time.monotonic() - self.pivot_brake_since) >= self.pivot_brake_timeout_s
+            if stopped or timed_out:
+                if timed_out and not stopped:
+                    self.get_logger().warn(
+                        f"pivot brake timed out after {self.pivot_brake_timeout_s:.1f}s "
+                        f"(still {speed:.3f} m/s) -- rotating anyway",
+                        throttle_duration_sec=5.0)
+                self.pivot_braking = True
+            else:
+                self._publish(0.0, 0.0)
+                self.get_logger().info(
+                    f"braking to a stop before pivoting (speed {speed:.3f} m/s)",
+                    throttle_duration_sec=0.5)
+                return True
+
         err = wrap_angle(nxt["target_yaw"] - self.car_yaw)
         if abs(err) <= self.pivot_tolerance_rad:
             self.get_logger().info(
                 f"pivot complete: now facing {math.degrees(self.car_yaw):+.0f}deg "
                 f"(target {math.degrees(nxt['target_yaw']):+.0f}deg)")
             self.pivots.pop(0)
+            self.pivot_braking = False
+            self.pivot_brake_since = None
+            # Re-arm for the NEXT pivot, which is a different point.
+            self.pivot_arrival_armed = False
+            self.pivot_best_d = float("inf")
             return False
         # Bang-bang, not proportional: a fixed rate is simpler to reason
         # about and verify on the bench than tuning a gain for a maneuver
@@ -1133,7 +1357,21 @@ class CmdVelArbiter(Node):
         past that minimum, rather than testing a fixed radius, means this
         stops at the true closest point reached whatever the real tracking
         error turns out to be, instead of a tolerance that might never be
-        satisfied."""
+        satisfied.
+
+        BUG FOUND IN SIM (2026-09-03), fixed by waypoint_stop_arm_radius_m:
+        cross_best[k] starts at inf and gets set to whatever d happens to be
+        on the very first tick, from wherever the rover starts -- 10+ metres
+        away for a waypoint late in the route. Ordinary EKF settling noise
+        of a few cm was then enough for the NEXT tick's d to exceed that by
+        more than waypoint_stop_margin_m, declaring "reached" before the
+        rover had moved from the start line at all. "Closest approach so
+        far" is only a meaningful signal once genuinely closing in on the
+        point -- far away it's measuring noise, not progress. So: the
+        passed-the-minimum test below only runs once armed (d has come
+        within waypoint_stop_arm_radius_m at least once); cross_best itself
+        still tracks every tick regardless, same as always, this only gates
+        when it gets ACTED on."""
         if not self.stop_at_waypoints:
             return False
         if self.next_stop_idx >= len(self.cross_xy) - 1:
@@ -1148,11 +1386,54 @@ class CmdVelArbiter(Node):
             self.awaiting_continue = False
             self.continue_requested = False
             self.next_stop_idx += 1
+            self.waypoint_stop_armed = False
             return False
 
         k = self.next_stop_idx
         d = distance(self.car_pos, self.cross_xy[k])
-        if self.cross_best[k] < float("inf") and d > self.cross_best[k] + self.waypoint_stop_margin_m:
+        # Waypoint position relative to the rover's heading: negative = ahead,
+        # positive = behind. Needed by BOTH the arm gate and the trigger below.
+        _tx, _ty = math.cos(self.car_yaw), math.sin(self.car_yaw)
+        _wp = self.cross_xy[k]
+        _along = (self.car_pos[0] - _wp[0]) * _tx + (self.car_pos[1] - _wp[1]) * _ty
+        if not self.waypoint_stop_armed:
+            # Arming needs BOTH "close to the waypoint" and "actually up to
+            # this part of the route". Distance alone is not enough: legs here
+            # loop hard (leg 2 is 12.3 m of path for a 4.16 m straight-line
+            # gap), so the rover passes within the arm radius of a waypoint
+            # EARLY, while still looping toward it, from a direction where it
+            # already reads as "past" the perpendicular.
+            #
+            # Measured in sim: distance-only arming fired the instant it armed
+            # and reported W9 at 198.9 cm -- essentially the arm radius itself.
+            # The index gate makes "near W9" mean "near W9 on final approach".
+            near_in_route = (k >= len(self.cross_idx) or
+                             self.route_idx >= self.cross_idx[k] - self.waypoint_stop_arm_poses)
+            # ...and the waypoint must still be AHEAD of the rover when we arm.
+            # Legs here loop hard enough to fly PAST a waypoint and come back:
+            # measured at W9, the route passes at 31 cm (idx ~127), recedes to
+            # 1.45 m, then returns to 4.9 cm (idx ~154). The index gate opens
+            # ~20 poses before 154, i.e. mid-loop, where the point is already
+            # BEHIND -- so the abeam trigger fired in the same tick it armed and
+            # reported the fly-past's 30.9 cm. Identical to the centimetre
+            # across three different trigger designs, which is what gave it away.
+            # Requiring "ahead" at arm time means only a real ahead->behind
+            # transition can fire, which is the actual closest approach.
+            if d <= self.waypoint_stop_arm_radius_m and near_in_route and _along < 0.0:
+                self.waypoint_stop_armed = True
+            else:
+                return False
+        # Has the waypoint gone abeam? Project the waypoint->rover vector onto
+        # the ROVER'S OWN heading: negative while the point is ahead, positive
+        # once it is behind. That is exactly the closest-approach condition for
+        # the trajectory the rover is actually flying.
+        #
+        # Deliberately NOT the path tangent at the waypoint, which was tried
+        # first: mid-corner the rover's heading and the path's tangent differ,
+        # so the perpendicular-to-tangent plane is crossed before the rover's
+        # real closest approach. Measured in sim, that stopped at W9 at 30.9 cm
+        # on a pass that went on to reach 6.0 cm -- ~25 cm early, every time.
+        if _along > self.waypoint_stop_margin_m:
             self.awaiting_continue = True
             self.get_logger().info(
                 f"reached {self.cross_names[k]} ({self.cross_best[k] * 100:.1f} cm closest "
@@ -1183,11 +1464,28 @@ class CmdVelArbiter(Node):
 
         detouring = self.local_plan_enabled and self.local_route is not None
         if not detouring and self._pending_pivot():
+            # The stuck/circling detector below measures "the lookahead index
+            # has not advanced for stuck_timeout_s". A pivot or a waypoint stop
+            # holds the rover deliberately still, so the index legitimately
+            # does not advance -- but those branches return before the detector
+            # runs, leaving _stuck_since frozen at a timestamp from before the
+            # hold. The moment driving resumed, now - _stuck_since already
+            # exceeded the timeout and the detector fired instantly.
+            #
+            # BUG FOUND IN SIM (2026-09-04): that false trigger, landing right
+            # as the rover departed W3 into the tightest arc on the route,
+            # force-advanced the index; the rover could not reach the receding
+            # target, so the index never advanced on its own, so it fired again
+            # every 3 s, marching the goal away. Cross-track error ran 5 m ->
+            # 13 m and the run was unrecoverable. Clearing the timer on every
+            # deliberate hold is what stops the cascade at its source.
+            self._stuck_since = None
             return
         if detouring:
             self._advance_global_idx()
         err = self._record_tracking_error()
         if not detouring and self._pending_waypoint_stop():
+            self._stuck_since = None
             return
 
         chase = self.local_route if detouring else self.route
@@ -1206,6 +1504,23 @@ class CmdVelArbiter(Node):
                 max(self.lookahead_min,
                     self.lookahead_min + self.lookahead_error_gain * err))
 
+            # TRIED (2026-09-03) making curvature_cap step aside entirely
+            # once err > lookahead_min, reasoning that it has nothing useful
+            # to say once the rover is already off the path by more than the
+            # shortest lookahead reaches. That worked for the circling this
+            # was built to fix (see MIN_TURNING_RADIUS's real fix in
+            # nav2_planning_params.yaml -- this bypass was not actually
+            # load-bearing for that one), but on its own it caused a NEW
+            # problem: jumping lookahead straight to lookahead_max the
+            # moment err crosses the threshold, while the rover's heading
+            # hasn't converged yet, searches for a point far along the path
+            # from a position/heading that doesn't reach one -- observed in
+            # sim as the lookahead index advancing only ~1 per 3s
+            # (stuck-circling firing repeatedly) with err growing
+            # continuously, moderate but never-clamped curvature the whole
+            # time (unlike genuine clamped circling, which pins at
+            # max_curvature). Reverted -- kappa_ahead governs curvature_cap
+            # unconditionally again, same as before 2026-09-03.
             kappa_ahead = path_curvature_ahead(chase, idx, self.lookahead_curvature_sample_m)
             curvature_cap = self.lookahead_max
             if kappa_ahead > 1e-6:
@@ -1214,6 +1529,27 @@ class CmdVelArbiter(Node):
                     max(self.lookahead_min, self.lookahead_curvature_gain / kappa_ahead))
 
             self.lookahead_distance = min(error_term, curvature_cap)
+
+            # Shorten the lookahead while closing on a waypoint. Pure pursuit
+            # always cuts the inside of a corner by roughly L^2/2R, so the
+            # lookahead that gives smooth tracking down a leg is the same
+            # thing that makes the rover miss the apex -- and the apexes here
+            # ARE the scored waypoints. Measured in sim at L=0.7, R=0.7:
+            # 0.7^2/(2*0.7) = 0.35 m of cut, against 31.4 cm actually observed
+            # at W9. Dropping to 0.35 m over the approach predicts ~9 cm.
+            #
+            # Only applied within waypoint_lookahead_radius_m of the next
+            # waypoint, so it buys accuracy exactly where it is scored and
+            # leaves the long legs on the full lookahead they track best with.
+            # Nearest waypoint, NOT cross_xy[next_stop_idx]: next_stop_idx only
+            # ever advances inside _pending_waypoint_stop, so with
+            # stop_at_waypoints=false it stays pinned at 1 and the shrink would
+            # follow one waypoint for the whole run.
+            if self.waypoint_lookahead_m > 0.0 and self.cross_xy:
+                d_wp = min(distance(self.car_pos, wp) for wp in self.cross_xy)
+                if d_wp <= self.waypoint_lookahead_radius_m:
+                    self.lookahead_distance = min(
+                        self.lookahead_distance, self.waypoint_lookahead_m)
 
         # A detour ends at its rejoin point, not at the goal. Only the route
         # whose end IS the global goal may declare the run complete.
@@ -1297,17 +1633,74 @@ class CmdVelArbiter(Node):
             if self._stuck_since is None:
                 self._stuck_since = now
             elif now - self._stuck_since >= self.stuck_timeout_s:
-                self.get_logger().warn(
-                    f"lookahead index {idx} hasn't advanced in "
-                    f"{self.stuck_timeout_s:.1f}s (stuck circling) -- forcing it forward."
-                )
-                idx = min(idx + 1, len(chase) - 1)
-                lookahead_point = chase[idx]
+                # Forcing the index forward only makes sense for a rover that
+                # is ON the path but grinding against a corner it keeps
+                # re-approaching. If it is far OFF the path, the index is not
+                # advancing because the rover cannot reach the path at all,
+                # and advancing the target moves the goal further away -- the
+                # rover then chases a receding point in a straight line and
+                # never comes back.
+                #
+                # Measured in sim: after a false trigger at W3 this ran every
+                # 3 s for 25+ iterations, walking cross-track error from 5 m to
+                # 13 m with no recovery possible. Past this threshold the right
+                # move is to leave the lookahead where it is and let pure
+                # pursuit steer back toward the path it is already chasing.
+                if err > self.stuck_force_max_error_m:
+                    self.get_logger().warn(
+                        f"{err:.2f} m off the path (> {self.stuck_force_max_error_m:.2f} m) and "
+                        f"index {idx} is not advancing -- NOT forcing forward, that would drive "
+                        f"the rover further away. Steering back toward the path instead.",
+                        throttle_duration_sec=3.0,
+                    )
+                else:
+                    self.get_logger().warn(
+                        f"lookahead index {idx} hasn't advanced in "
+                        f"{self.stuck_timeout_s:.1f}s (stuck circling) -- forcing it forward."
+                    )
+                    idx = min(idx + 1, len(chase) - 1)
+                    lookahead_point = chase[idx]
+                    self._last_seen_idx = idx
                 self._stuck_since = None
-                self._last_seen_idx = idx
         else:
             self._stuck_since = None
             self._last_seen_idx = idx
+
+        # ---- final approach: aim AT the waypoint, not at the path ----
+        # Pure pursuit chasing a point on the path always cuts the inside of a
+        # corner by ~L^2/2R, and the corners here ARE the scored waypoints, so
+        # there is a hard floor on how close it can stop: 8.75 cm even at
+        # L=0.35, R=0.7. Aiming the pursuit target directly at the waypoint
+        # over the last stretch removes that term by construction.
+        #
+        # Safe against the collision-checked plan: the waypoint lies ON the
+        # planned path, and corner-cutting is what pulls the rover OFF it
+        # (toward the inside). Steering at the point moves the rover back
+        # toward the route, never further from it -- which matters here, where
+        # some waypoints have only 0.40 m of clearance.
+        #
+        # Index-gated the same way the stop is, so a leg that loops within
+        # waypoint_final_approach_m of a waypoint on its way somewhere else
+        # does not get dragged toward it.
+        if (not detouring and self.waypoint_final_approach_m > 0.0
+                and self.cross_xy and self.cross_idx):
+            k = self.next_stop_idx if self.stop_at_waypoints else None
+            if k is None:
+                k = next((i for i, ci in enumerate(self.cross_idx)
+                          if ci >= self.route_idx), None)
+            if k is not None and 0 < k < len(self.cross_xy):
+                d_wp = distance(self.car_pos, self.cross_xy[k])
+                near_in_route = (self.route_idx >=
+                                 self.cross_idx[k] - self.waypoint_stop_arm_poses)
+                # Only aim at it while it is genuinely AHEAD -- same fly-past
+                # hazard as the stop's arm gate (see _pending_waypoint_stop).
+                # Steering toward a waypoint the rover has already passed would
+                # drag it off the planned path mid-loop.
+                wx, wy = self.cross_xy[k]
+                ahead = ((wx - self.car_pos[0]) * math.cos(self.car_yaw) +
+                         (wy - self.car_pos[1]) * math.sin(self.car_yaw)) > 0.0
+                if d_wp <= self.waypoint_final_approach_m and near_in_route and ahead:
+                    lookahead_point = self.cross_xy[k]
 
         if detouring:
             self.local_idx = idx

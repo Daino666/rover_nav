@@ -2,9 +2,9 @@ ros2 launch aries_bringup full_hardware.launch.py \
   path_csv:=$HOME/jazzy_ws/marsyard/w1w3w9w5_loop.csv \
   waypoints_csv:=$HOME/jazzy_ws/marsyard/w1w3w9w5_loop_waypoints.csv \
   pivots_csv:=$HOME/jazzy_ws/marsyard/w1w3w9w5_loop_pivots.csv \
-  map_to_odom_yaw_deg:=<measured on the day> \
+  map_to_odom_yaw_deg:=90 \
   stop_at_waypoints:=true \
-  enable_front_camera:=true front_camera_serial:=<your camera's serial> \
+  enable_front_camera:=true \
   start_aruco:=true aruco_snap:=true aruco_start_point:=S1 \
   obstacle_stop_enabled:=false
 

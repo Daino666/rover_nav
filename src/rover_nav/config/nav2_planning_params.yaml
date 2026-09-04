@@ -94,21 +94,34 @@ planner_server:
       # inside a radius the corridor didn't have room for -- see
       # rover_nav/README.md's draw-path section.
       #
-      # Lowered to 0.5 m 2026-09-03 -- as tight as this can go. 0.5 m is not
-      # arbitrary: it is EXACTLY cmd_vel_arbiter.py's own max_curvature=2.0
-      # (1/0.5) pure-pursuit clamp, the tightest turn the live follower will
-      # ever execute. Going any tighter than that would let the planner hand
-      # the follower a curve it physically refuses to track at runtime (its
-      # own clamp caps it), recreating the exact "circles instead of
-      # following the plan" failure this bound exists to prevent -- so this
-      # is the floor, not a step toward zero.
+      # Lowered to 0.5 m 2026-09-03, then RAISED BACK to 0.7 m the same day
+      # after sim testing found it circling for real. 0.5 m is EXACTLY
+      # cmd_vel_arbiter.py's own max_curvature=2.0 (1/0.5) pure-pursuit
+      # clamp -- the reasoning was "the planner then never asks for
+      # anything tighter than the follower can already do." That reasoning
+      # had a gap: it assumes perfect tracking. Pure pursuit always needs
+      # SOME extra curvature over the path's own nominal value to correct
+      # for real tracking lag, and with the planner's ceiling set to
+      # EXACTLY the follower's hard clamp there was zero headroom for that
+      # correction -- observed in sim as the rover pinning at curvature
+      # 2.000 for several seconds and circling at a point where the path's
+      # OWN curvature was already near the clamp, well before cross-track
+      # error had even grown large. 0.7 m (curvature 1.43 1/m) restores
+      # ~29% headroom under the 2.0 clamp. Still far tighter than the
+      # original 2.0 m/1.5 m, and the in-place pivot mechanism
+      # (plan_global_path.py's pivots, executed by cmd_vel_arbiter's
+      # _pending_pivot) remains available for any leg this still can't
+      # connect continuously -- so tightening further here is not the
+      # only tool for a hard corridor. Retune together with
+      # cmd_vel_arbiter's lookahead_curvature_gain if this changes again
+      # (see that parameter's own comment for the formula).
       #
       # NOTE: this is still NOT a true in-place pivot. motion_model_for_search
       # is DUBIN (forward-only, see below) -- Hybrid-A* keeps moving forward
       # while turning even at this radius, it does not stop and spin. A real
       # zero-radius pivot would need REEDS_SHEPP or a dedicated spin-in-place
       # behaviour in cmd_vel_arbiter itself, neither of which this does.
-      minimum_turning_radius: 0.5
+      minimum_turning_radius: 0.7
 
       # DUBIN = forward-only primitives. The rover drives at a constant
       # positive base_velocity and pure pursuit has no reverse gear, so

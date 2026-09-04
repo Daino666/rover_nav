@@ -374,8 +374,34 @@ the day's course or hardware actually demands.
 | `lookahead_min` / `lookahead_max` | `full_hardware.launch.py` args → `cmd_vel_arbiter.py` | `0.4` / `0.7` | Path-tracking tightness vs. recovery margin. `lookahead_max=0.7` is sized to the validated 0-0.7 m ArUco correction range — don't lower it if `start_aruco` is on, or a snap can pin curvature to the clamp and the rover circles instead of rejoining the path (see `cmd_vel_arbiter.py`'s `lookahead_dynamic` comments) |
 | `aruco_max_correction_m` | `full_hardware.launch.py` arg → `aruco_pose_reset` | `0.8` | Sanity gate on a single snap. Matches the validated 0-0.7 m range plus headroom; raise together with `lookahead_max` if genuine drift ever exceeds it, never alone |
 | `inflation_radius` / `cost_scaling_factor` | `config/nav2_planning_params.yaml`, `global_costmap.inflation_layer` | `1.0` / `3.0` | How far the planner stays from obstacles. Lower `cost_scaling_factor` (cost decays slower) or raise `inflation_radius` if planned paths run too close to rocks; the reverse if paths look unnecessarily indirect |
-| `minimum_turning_radius` | `config/nav2_planning_params.yaml`, `planner_server.GridBased` | `1.5` | The rocker-bogie wheel-scrub curvature bound for *this* yard's terrain — see the "Global planner" table above before changing; a wider value can make routes unplannable on tight legs (e.g. W6) |
+| `minimum_turning_radius` | `config/nav2_planning_params.yaml`, `planner_server.GridBased` | `0.7` | The rocker-bogie wheel-scrub curvature bound for *this* yard's terrain — see the "Global planner" table above before changing; a wider value can make routes unplannable on tight legs (e.g. W6). Do **not** lower it to exactly `1/max_curvature` (0.5 m): that leaves pure pursuit zero headroom to correct tracking error and the rover circles — see the parameter's own comment |
 | `map_yaml` | `nav2_planning.launch.py` arg | `~/jazzy_ws/marsyard/marsyard2026_occupancy.yaml` | Only if the map moves off the standard path |
+
+### Pin the parking heading when planning the route
+
+Leg 0's departure heading is a free variable — the rover can pivot in place
+before it sets off, so `plan_global_path.py` sweeps for *any* heading that
+plans. That optimises for the wrong thing on competition day: it can land on
+a heading with no physical sightline to aim down (the w1w3w9w5 route first
+picked `-30deg`), and the operator then has to match it by eye, where 1
+degree of error is 35 cm at a waypoint 20 m out.
+
+Plan with `--parked-yaw` instead. It fixes the heading the rover is *parked*
+at, tries to depart on it, and if the route genuinely cannot, records a
+`route_index` 0 pivot so the rover rotates **itself** before setting off:
+
+```
+ros2 run rover_nav plan_global_path.py --start S1 --points ... --parked-yaw 90
+```
+
+Either way the operator's job is identical and unambiguous: park on that one
+heading, and pass the same number as `map_to_odom_yaw_deg`. `90` = map +Y,
+the survey axis. (Use `--parked-yaw=-30` form for negative values — argparse.)
+
+Note this does **not** fix *aiming* error: if the rover is parked at 87 deg
+but launched with `map_to_odom_yaw_deg:=90`, everything is 3 deg off and no
+pivot corrects it, because the stack believes the 90. ArUco correction is
+what absorbs that.
 
 One-command reference for the day, once `map_to_odom_yaw_deg` is measured and
 a route is planned:
@@ -383,8 +409,9 @@ a route is planned:
 ```
 ros2 launch aries_bringup full_hardware.launch.py \
   path_csv:=<planned route csv> waypoints_csv:=<planned route waypoints csv> \
+  pivots_csv:=<planned route pivots csv> \
   start_aruco:=true aruco_snap:=true aruco_start_point:=<S1..S9> \
-  map_to_odom_yaw_deg:=<measured>
+  map_to_odom_yaw_deg:=<the --parked-yaw used above>
 ```
 
 Drop `start_aruco:=true aruco_snap:=true` (or leave them at their `false`

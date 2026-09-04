@@ -163,14 +163,15 @@ def generate_launch_description():
         DeclareLaunchArgument("lookahead_max", default_value="0.7"),
         DeclareLaunchArgument("lookahead_error_gain", default_value="1.0"),
         DeclareLaunchArgument(
-            "lookahead_curvature_gain", default_value="0.8",
+            "lookahead_curvature_gain", default_value="0.572",
             description=(
-                "Retuned 2026-09-03 from 0.267 (calibrated against the old "
-                "MIN_TURNING_RADIUS=1.5m / 0.667 1/m test-course curvature) to 0.8 "
-                "(lookahead_min * new MIN_TURNING_RADIUS=0.5m's 2.0 1/m), matching the "
-                "much tighter curvature the current competition route actually drives. "
-                "See cmd_vel_arbiter.py's declare_parameter comment for the full "
-                "derivation and the retune formula if MIN_TURNING_RADIUS changes again."
+                "Matches MIN_TURNING_RADIUS=0.7m (curvature 1.43 1/m) -- lookahead_min "
+                "* 1.43 = 0.572. A same-day 0.8 (for a since-reverted 0.5m radius) made "
+                "the rover circle for real in sim testing: it gave the planner zero "
+                "tracking margin under this node's own max_curvature=2.0 clamp. See "
+                "MIN_TURNING_RADIUS's comment in config/nav2_planning_params.yaml before "
+                "changing either of these again -- the margin between them matters more "
+                "than this gain's exact value."
             ),
         ),
         DeclareLaunchArgument(
@@ -327,12 +328,28 @@ def generate_launch_description():
             ),
         ),
         DeclareLaunchArgument(
-            "pivot_max_angular_rps", default_value="0.4",
-            description="Angular rate (rad/s) used while executing an in-place pivot.",
+            "pivot_max_angular_rps", default_value="0.2",
+            description=(
+                "Angular rate (rad/s) used while executing an in-place pivot. "
+                "Lowered from 0.4 2026-09-04 for shaky real wheels -- closed-loop "
+                "(car_yaw checked every tick), so slower costs time not accuracy."
+            ),
         ),
         DeclareLaunchArgument(
             "pivot_tolerance_deg", default_value="3.0",
             description="Heading error within which a pivot is considered done.",
+        ),
+        DeclareLaunchArgument(
+            "pivot_brake_speed_mps", default_value="0.03",
+            description=(
+                "Speed the rover must brake down to before a pivot starts rotating -- "
+                "avoids drifting/arcing while both wheels ramp toward opposite-signed "
+                "targets at once instead of cleanly stopping first."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "pivot_brake_timeout_s", default_value="3.0",
+            description="Give up waiting to brake and rotate anyway after this long.",
         ),
         DeclareLaunchArgument(
             "stop_at_waypoints",
@@ -354,6 +371,15 @@ def generate_launch_description():
             description=(
                 "How far past a waypoint's closest approach (stop_at_waypoints only) "
                 "before treating it as passed and stopping."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "waypoint_stop_arm_radius_m", default_value="2.0",
+            description=(
+                "stop_at_waypoints only: don't evaluate closest-approach-passed at all "
+                "until within this radius, or ordinary EKF noise far from the waypoint "
+                "can trip it before the rover has even started its real approach -- "
+                "found in sim testing 2026-09-03."
             ),
         ),
         DeclareLaunchArgument(
@@ -509,10 +535,16 @@ def generate_launch_description():
                     LaunchConfiguration("pivot_max_angular_rps"), value_type=float),
                 "pivot_tolerance_deg": ParameterValue(
                     LaunchConfiguration("pivot_tolerance_deg"), value_type=float),
+                "pivot_brake_speed_mps": ParameterValue(
+                    LaunchConfiguration("pivot_brake_speed_mps"), value_type=float),
+                "pivot_brake_timeout_s": ParameterValue(
+                    LaunchConfiguration("pivot_brake_timeout_s"), value_type=float),
                 "stop_at_waypoints": ParameterValue(
                     LaunchConfiguration("stop_at_waypoints"), value_type=bool),
                 "waypoint_stop_margin_m": ParameterValue(
                     LaunchConfiguration("waypoint_stop_margin_m"), value_type=float),
+                "waypoint_stop_arm_radius_m": ParameterValue(
+                    LaunchConfiguration("waypoint_stop_arm_radius_m"), value_type=float),
                 "path_frame": ParameterValue(
                     LaunchConfiguration("path_frame"), value_type=str),
                 "obstacle_stop_enabled": ParameterValue(

@@ -42,7 +42,7 @@ DEFAULT_OUT_DIR = os.path.expanduser("~/jazzy_ws/marsyard")
 # minimum_turning_radius in config/nav2_planning_params.yaml -- this value only
 # drives the reporting below, so a mismatch silently mis-scores the path rather
 # than changing what gets planned.
-MIN_TURNING_RADIUS = 0.5
+MIN_TURNING_RADIUS = 0.7
 
 
 def load_survey_points(path):
@@ -244,6 +244,15 @@ def main():
     ap.add_argument("--points", nargs="+", default=["W6", "W5", "W7", "W8"],
                     help="Waypoints to visit (survey names or 'x,y')")
     ap.add_argument("--loop", action="store_true", help="Return to the start at the end")
+    ap.add_argument("--parked-yaw", type=float, default=None,
+                    help="Map-frame heading (degrees) the rover is physically parked at "
+                         "before the run; 90 = map +Y, the survey axis. Leg 0 is planned to "
+                         "depart on this heading if it can, and if it cannot, an in-place "
+                         "pivot at route_index 0 is recorded so the rover rotates ITSELF to "
+                         "the needed heading before setting off. Either way the operator "
+                         "always parks at the same heading. Default: let the planner pick "
+                         "leg 0's heading freely, which the operator must then match by "
+                         "hand. Use --parked-yaw=-30 form for negative values.")
     ap.add_argument("--in-order", action="store_true",
                     help="Visit --points as given instead of nearest-first")
     ap.add_argument("--name", default="global_path_hybrid", help="Output basename")
@@ -312,6 +321,21 @@ def main():
     # headings that plan into a given waypoint can be as narrow as 3 of 12, so
     # the straight-line bearing being one of them is not a safe assumption.
     natural_start = bearing(start_xy, route_xy[0])
+    if args.parked_yaw is not None:
+        # The operator commits to ONE parking heading and the plan adapts to
+        # it, rather than the plan picking a heading the operator must then
+        # match by hand. The sweep optimises for "some heading that plans",
+        # which is the wrong objective on competition day: it can land on a
+        # departure heading with no physical sightline to aim down (this
+        # yard's w1w3w9w5 route first picked -30deg), and every degree of
+        # aiming error there propagates -- 1 degree is 35 cm at a waypoint
+        # 20 m out.
+        #
+        # Parked heading goes FIRST so a route that can just drive off needs
+        # no pivot at all; the sweep stays as fallback, and taking it records
+        # a route_index-0 pivot below so the rover rotates itself. Either
+        # branch keeps the operator's job identical: park at this heading.
+        natural_start = math.radians(args.parked_yaw)
     start_yaws = [natural_start] + _sweep([natural_start])
     cur_yaw = natural_start
 
@@ -336,7 +360,22 @@ def main():
     for i, (label, goal_xy) in enumerate(route):
         poses = None
         goal_hs = heading_candidates(start_xy, route_xy, i)
-        if i == 0:
+        if i == 0 and args.parked_yaw is not None:
+            # Two-phase, mirroring the i>0 branch below: exhaust every goal
+            # heading from the PARKED heading before considering any other
+            # departure heading, so a route that can simply drive off the
+            # parking heading does exactly that and records no pivot.
+            #
+            # The flat product used otherwise orders goal-heading-outer, which
+            # takes a *swept* start heading paired with a *preferred* goal
+            # heading over the *parked* start heading paired with a
+            # less-preferred one. Measured on w1w3w9w5: that ordering pivoted
+            # -120deg off the parked +90deg even though departing at +90deg
+            # plans fine (it just arrives on +0deg rather than the preferred
+            # heading) -- a wholly unnecessary rotation, and a longer route.
+            candidates = [(natural_start, gy) for gy in goal_hs]
+            candidates += [(sy, gy) for gy in goal_hs for sy in _sweep([natural_start])]
+        elif i == 0:
             # Leg 0 may vary where the rover points before it starts moving
             # at all -- an in-place pivot here needs no CSV encoding, the
             # rover just starts facing the right way (see the note below).
@@ -394,8 +433,24 @@ def main():
             poses = trial
             chosen_yaw = yaw
             if i == 0 and abs(_wrap(syaw - natural_start)) > 1e-6:
-                print(f"    (pivot in place to {math.degrees(syaw):+.0f}deg before setting off "
-                      f"-- the straight-line bearing could not reach this waypoint)")
+                if args.parked_yaw is not None:
+                    # The rover is parked at natural_start but leg 0 cannot
+                    # depart from there, so record the rotation as a pivot at
+                    # route_index 0 instead of leaving it for the operator to
+                    # aim by hand. cmd_vel_arbiter's _pending_pivot fires this
+                    # before any driving (route_idx starts at 0, and its
+                    # "route_idx < idx" guard is already false), braking first
+                    # against an already-stopped rover, then rotating.
+                    pivots.append((0, syaw))
+                    print(f"    (rover rotates itself {math.degrees(_wrap(syaw - natural_start)):+.0f}deg "
+                          f"from the parked {math.degrees(natural_start):+.0f}deg to "
+                          f"{math.degrees(syaw):+.0f}deg before setting off -- recorded as a "
+                          f"pivot, no manual aiming needed)")
+                else:
+                    print(f"    (pivot in place to {math.degrees(syaw):+.0f}deg before setting off "
+                          f"-- the straight-line bearing could not reach this waypoint; PARK THE "
+                          f"ROVER ON THIS HEADING, or re-plan with --parked-yaw to have the rover "
+                          f"rotate itself)")
             elif i > 0 and abs(_wrap(syaw - cur_yaw)) > 1e-6:
                 # cur_yaw dead-ended every goal heading (phase 1 above), so
                 # the rover stops here and physically rotates to syaw before
