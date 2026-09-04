@@ -367,7 +367,7 @@ class CmdVelArbiter(Node):
         # (see _pending_pivot below, checks car_yaw every tick against
         # pivot_tolerance_deg) so a slower rate costs time, not accuracy --
         # each control tick just takes a smaller angular step.
-        self.declare_parameter("pivot_max_angular_rps", 0.2)
+        self.declare_parameter("pivot_max_angular_rps", 0.15)
         self.declare_parameter("pivot_tolerance_deg", 3.0)
         # Brake to a real stop before starting to rotate. wheel_accel_rps2
         # (cmd_vel_odrive_bridge.py) ramps each wheel toward its target
@@ -386,6 +386,10 @@ class CmdVelArbiter(Node):
         # waypoint_stop_arm_radius_m: far from the point, "closest so far" is
         # measuring noise rather than progress.
         self.declare_parameter("pivot_arrive_radius_m", 2.0)
+        # Hard ceiling on ONE in-place rotation. Sized well above the worst
+        # real pivot on this route (140 deg at 0.15 rad/s is ~16 s) so it only
+        # fires on a genuine failure to rotate, never on a slow-but-working one.
+        self.declare_parameter("pivot_timeout_s", 45.0)
         # How many route poses BEFORE a waypoint's own pose the stop may arm.
         # Poses run ~0.175 m apart, so 20 is roughly the last 3.5 m of the
         # approach -- comfortably more than waypoint_stop_arm_radius_m, while
@@ -481,6 +485,7 @@ class CmdVelArbiter(Node):
             self.get_parameter("pivot_brake_speed_mps").value)
         self.pivot_arrive_radius_m = float(
             self.get_parameter("pivot_arrive_radius_m").value)
+        self.pivot_timeout_s = float(self.get_parameter("pivot_timeout_s").value)
         self.waypoint_stop_arm_poses = int(
             self.get_parameter("waypoint_stop_arm_poses").value)
         self.waypoint_final_approach_m = float(
@@ -573,6 +578,7 @@ class CmdVelArbiter(Node):
         self.pivot_brake_since = None
         self.pivot_arrival_armed = False
         self.pivot_best_d = float("inf")
+        self.pivot_started = None
         # Stop-and-wait state. next_stop_idx indexes into cross_xy/cross_names
         # -- starts at 1 to skip the START row (index 0), reset to 1 whenever
         # _ensure_route (re)builds the route, same as cross_best.
@@ -1110,6 +1116,7 @@ class CmdVelArbiter(Node):
             self.pivot_brake_since = None
             self.pivot_arrival_armed = False
             self.pivot_best_d = float("inf")
+            self.pivot_started = None
             if self.pivots:
                 self.get_logger().info(
                     f"{len(self.pivots)} in-place pivot(s) loaded from "
@@ -1322,7 +1329,38 @@ class CmdVelArbiter(Node):
             # Re-arm for the NEXT pivot, which is a different point.
             self.pivot_arrival_armed = False
             self.pivot_best_d = float("inf")
+            self.pivot_started = None
             return False
+        # Give up rather than hang here forever. The brake phase above has a
+        # timeout; the ROTATION had none, so a pivot that cannot physically
+        # complete -- wheels not breaking static friction on loose terrain at
+        # this deliberately low rate, a stalled axis, a yaw estimate that never
+        # converges -- would command rotation for the rest of the run with no
+        # way out but manual intervention. That is the worst failure shape for
+        # an autonomous run: silent, stationary, and indefinite.
+        #
+        # This mechanism has never turned a real wheel, so it fails OPEN: warn
+        # loudly, drop the pivot, and carry on driving the path. Pure pursuit
+        # then recovers the heading over the next few metres, which is far
+        # better than stopping the run outright. The operator is at the
+        # controller anyway in stop_at_waypoints mode and can take over.
+        if self.pivot_started is None:
+            self.pivot_started = time.monotonic()
+        elif (time.monotonic() - self.pivot_started) >= self.pivot_timeout_s:
+            self.get_logger().error(
+                f"PIVOT TIMED OUT after {self.pivot_timeout_s:.0f}s still "
+                f"{math.degrees(err):+.1f}deg from target "
+                f"({math.degrees(nxt['target_yaw']):+.0f}deg) -- giving up on it and "
+                f"driving on. Check the wheels actually turn in place at "
+                f"pivot_max_angular_rps={self.pivot_max_angular_rps:.2f} rad/s.")
+            self.pivots.pop(0)
+            self.pivot_braking = False
+            self.pivot_brake_since = None
+            self.pivot_arrival_armed = False
+            self.pivot_best_d = float("inf")
+            self.pivot_started = None
+            return False
+
         # Bang-bang, not proportional: a fixed rate is simpler to reason
         # about and verify on the bench than tuning a gain for a maneuver
         # that only runs a handful of times per competition run.

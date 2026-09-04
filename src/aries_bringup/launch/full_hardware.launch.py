@@ -328,11 +328,21 @@ def generate_launch_description():
             ),
         ),
         DeclareLaunchArgument(
-            "pivot_max_angular_rps", default_value="0.2",
+            "pivot_max_angular_rps", default_value="0.15",
             description=(
                 "Angular rate (rad/s) used while executing an in-place pivot. "
                 "Lowered from 0.4 2026-09-04 for shaky real wheels -- closed-loop "
                 "(car_yaw checked every tick), so slower costs time not accuracy."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "pivot_timeout_s", default_value="45.0",
+            description=(
+                "Hard ceiling on ONE in-place rotation. On expiry the pivot is "
+                "ABANDONED with an error log and the run drives on, rather than "
+                "commanding rotation forever -- the failure shape if the wheels "
+                "never break loose at pivot_max_angular_rps. Pure pursuit "
+                "recovers the heading over the next few metres."
             ),
         ),
         DeclareLaunchArgument(
@@ -533,6 +543,8 @@ def generate_launch_description():
                     LaunchConfiguration("pivots_csv"), value_type=str),
                 "pivot_max_angular_rps": ParameterValue(
                     LaunchConfiguration("pivot_max_angular_rps"), value_type=float),
+                "pivot_timeout_s": ParameterValue(
+                    LaunchConfiguration("pivot_timeout_s"), value_type=float),
                 "pivot_tolerance_deg": ParameterValue(
                     LaunchConfiguration("pivot_tolerance_deg"), value_type=float),
                 "pivot_brake_speed_mps": ParameterValue(
