@@ -8,11 +8,15 @@ ros2 launch aries_bringup full_hardware.launch.py \
   start_aruco:=true aruco_snap:=true aruco_start_point:=S1 \
   obstacle_stop_enabled:=false \
   pivot_max_angular_rps:=0.15 \
-  pivot_timeout_s:=45.0
+  pivot_timeout_s:=45.0 \
 
 
 ros2 launch rover_nav nav2_planning.launch.py rviz:=true static_tf:=false
 
+ros2 run rover_nav preview_path.py \
+  --path marsyard/w5w3w9w1_loop.csv \
+  --waypoints marsyard/w5w3w9w1_loop_waypoints.csv \
+  --frame map --yaw 90
 
 ros2 run rover_nav wait_and_continue.py
 
