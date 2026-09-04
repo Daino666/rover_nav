@@ -515,6 +515,7 @@ class CmdVelArbiter(Node):
 
         # ---- teleop override
         self.last_teleop_cmd = None
+        self._teleop_was_active = False
         self.last_teleop_active_time = 0.0
         self.force_replan = False
 
@@ -1545,7 +1546,23 @@ class CmdVelArbiter(Node):
             # ever advances inside _pending_waypoint_stop, so with
             # stop_at_waypoints=false it stays pinned at 1 and the shrink would
             # follow one waypoint for the whole run.
-            if self.waypoint_lookahead_m > 0.0 and self.cross_xy:
+            #
+            # ONLY while the rover is essentially on the path. The error term
+            # above deliberately WIDENS the lookahead as cross-track error
+            # grows, so a big correction is asked for gently instead of at the
+            # curvature clamp; an unconditional min() here overrode that and
+            # left a 0.35 m lookahead trying to erase far more error than it
+            # can reach, which is the classic pure-pursuit failure.
+            #
+            # Measured in sim: after teleop left the rover 0.85 m off the path
+            # near a waypoint, it could not rejoin -- error grew to 1.44 m with
+            # 8 stuck-circling events. The same trap applies to an ArUco snap,
+            # which lands a correction of up to 0.7 m precisely near landmarks,
+            # i.e. near waypoints (see lookahead_max's note in README.md).
+            # Gating on err keeps the accuracy win, which only ever happens
+            # when err is already small, without disarming recovery.
+            if (self.waypoint_lookahead_m > 0.0 and self.cross_xy
+                    and err <= self.waypoint_lookahead_m):
                 d_wp = min(distance(self.car_pos, wp) for wp in self.cross_xy)
                 if d_wp <= self.waypoint_lookahead_radius_m:
                     self.lookahead_distance = min(
@@ -1802,7 +1819,35 @@ class CmdVelArbiter(Node):
             self.pub.publish(cmd)
             self.force_replan = True
             self.gate_reason = "manual teleop override"
+            self._teleop_was_active = True
             return
+
+        if self._teleop_was_active:
+            # Teleop just released. The ROUTE must not re-anchor (see the
+            # path_csv branch below -- it is a fixed piece of ground), but
+            # route_idx must, because the lookahead search only ever scans
+            # FORWARD from it. Drive the rover forward past route_idx by hand
+            # and chase[route_idx] is left behind the rover yet still further
+            # than one lookahead away, so it gets selected and the rover turns
+            # around and drives back to it.
+            #
+            # Re-syncing the index to the nearest route point lets the operator
+            # reposition freely -- forward, back, or off to the side -- and
+            # have autonomy pick up from wherever the rover actually is.
+            self._teleop_was_active = False
+            if self.route and self.car_pos is not None:
+                near_i, near_d = self.route_idx, float("inf")
+                for i, p in enumerate(self.route):
+                    dd = distance(self.car_pos, p)
+                    if dd < near_d:
+                        near_d, near_i = dd, i
+                if near_i != self.route_idx:
+                    self.get_logger().info(
+                        f"teleop released -- resuming from route index {near_i} "
+                        f"({near_d:.2f} m from the path), was {self.route_idx}")
+                self.route_idx = near_i
+                self._last_seen_idx = None
+                self._stuck_since = None
 
         allowed, reason = self._safety_gate(now)
         if not allowed:

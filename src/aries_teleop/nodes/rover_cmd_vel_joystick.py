@@ -7,7 +7,7 @@ import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Twist
 from sensor_msgs.msg import Joy
-from std_srvs.srv import SetBool
+from std_srvs.srv import SetBool, Trigger
 
 
 class RoverCmdVelJoystick(Node):
@@ -50,6 +50,17 @@ class RoverCmdVelJoystick(Node):
         # deflected stick cannot lurch the rover on re-arm.
         self.declare_parameter("reinit_hold_sec", 1.0)
 
+        # LB + A resumes an autonomous run that has stopped at a waypoint
+        # (cmd_vel_arbiter's stop_at_waypoints). Without this the only way to
+        # continue is Enter in wait_and_continue.py, which means putting the
+        # controller down mid-run -- awkward exactly when the operator has just
+        # finished hand-positioning the rover with the sticks.
+        #
+        # Same modifier as the re-arm combo so a bare button press cannot
+        # advance the route by accident. An empty continue_service disables it.
+        self.declare_parameter("continue_service", "/planner/continue")
+        self.declare_parameter("continue_button", 0)            # A
+
         self.joy_topic = str(self.get_parameter("joy_topic").value)
         self.cmd_vel_topic = str(self.get_parameter("cmd_vel_topic").value)
 
@@ -69,6 +80,8 @@ class RoverCmdVelJoystick(Node):
         self.publish_rate_hz = float(self.get_parameter("publish_rate_hz").value)
 
         self.enable_service = str(self.get_parameter("enable_service").value).strip()
+        self.continue_service = str(self.get_parameter("continue_service").value)
+        self.continue_button = int(self.get_parameter("continue_button").value)
         self.reinit_button = int(self.get_parameter("reinit_button").value)
         self.reinit_modifier_button = int(
             self.get_parameter("reinit_modifier_button").value
@@ -86,10 +99,18 @@ class RoverCmdVelJoystick(Node):
         self._prev_reinit_combo = False
         self._reinit_hold_until = 0.0
         self._reinit_call_pending = False
+        self._prev_continue_combo = False
+        self._continue_call_pending = False
 
         self.enable_client = (
             self.create_client(SetBool, self.enable_service)
             if self.enable_service
+            else None
+        )
+
+        self.continue_client = (
+            self.create_client(Trigger, self.continue_service)
+            if self.continue_service
             else None
         )
 
@@ -103,10 +124,16 @@ class RoverCmdVelJoystick(Node):
             if self.enable_client is not None
             else "Drive re-arm binding disabled (empty enable_service)."
         )
+        cont = (
+            f" LB+{self.continue_button} (LB+A) continues a run stopped at a "
+            f"waypoint via {self.continue_service}."
+            if self.continue_client is not None
+            else ""
+        )
         forward_only_note = " forward_only: turn axis disabled." if self.forward_only else ""
         self.get_logger().info(
             f"Rover joystick ready. Hold LB/button {self.enable_button}. "
-            f"Publishing ONLY {self.cmd_vel_topic}. {combo}{forward_only_note}"
+            f"Publishing ONLY {self.cmd_vel_topic}. {combo}{cont}{forward_only_note}"
         )
 
     def _axis(self, msg, index):
@@ -146,7 +173,16 @@ class RoverCmdVelJoystick(Node):
             self._request_reinit()
         self._prev_reinit_combo = reinit_combo
 
-        if enabled and not reinit_combo:
+        # LB + A, edge-triggered the same way, so holding it advances one stop.
+        continue_combo = bool(
+            self._button(msg, self.reinit_modifier_button)
+            and self._button(msg, self.continue_button)
+        )
+        if continue_combo and not self._prev_continue_combo:
+            self._request_continue()
+        self._prev_continue_combo = continue_combo
+
+        if enabled and not reinit_combo and not continue_combo:
             linear = self._axis(msg, self.linear_axis)
             angular = self._axis(msg, self.angular_axis)
 
@@ -168,6 +204,43 @@ class RoverCmdVelJoystick(Node):
         else:
             self.target_linear = 0.0
             self.target_angular = 0.0
+
+    def _request_continue(self):
+        """LB + A: resume an autonomous run halted at a waypoint."""
+        if self.continue_client is None:
+            return
+
+        if self._continue_call_pending:
+            self.get_logger().warn("Continue already in flight -- ignoring LB+A")
+            return
+
+        # service_is_ready() not wait_for_service(), for the same reason as
+        # _request_reinit: this runs in the subscription callback and blocking
+        # would stall the executor that must deliver the response.
+        if not self.continue_client.service_is_ready():
+            self.get_logger().warn(
+                f"LB+A: {self.continue_service} unavailable -- is a run with "
+                f"stop_at_waypoints active?"
+            )
+            return
+
+        self.get_logger().warn(f"LB+A: continuing the run via {self.continue_service}")
+        self._continue_call_pending = True
+        future = self.continue_client.call_async(Trigger.Request())
+
+        def _done(fut):
+            self._continue_call_pending = False
+            try:
+                res = fut.result()
+            except Exception as exc:
+                self.get_logger().error(f"LB+A: continue call failed: {exc}")
+                return
+            # success=False is normal and not an error: it just means the run
+            # was not sitting at a waypoint when the button was pressed.
+            level = self.get_logger().info if res.success else self.get_logger().warn
+            level(f"LB+A: {res.message}")
+
+        future.add_done_callback(_done)
 
     def _request_reinit(self):
         """LB + Y: ask the ODrive bridge to re-arm every axis."""
