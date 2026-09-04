@@ -386,12 +386,6 @@ class CmdVelArbiter(Node):
         # waypoint_stop_arm_radius_m: far from the point, "closest so far" is
         # measuring noise rather than progress.
         self.declare_parameter("pivot_arrive_radius_m", 2.0)
-        # Lookahead used while within waypoint_lookahead_radius_m of the next
-        # waypoint -- shorter than the cruising lookahead so pure pursuit cuts
-        # less of the corner at the points that are actually scored. See the
-        # L^2/2R note in _drive_test_path. 0.0 disables the whole behaviour.
-        self.declare_parameter("waypoint_lookahead_m", 0.35)
-        self.declare_parameter("waypoint_lookahead_radius_m", 2.0)
         # How many route poses BEFORE a waypoint's own pose the stop may arm.
         # Poses run ~0.175 m apart, so 20 is roughly the last 3.5 m of the
         # approach -- comfortably more than waypoint_stop_arm_radius_m, while
@@ -487,10 +481,6 @@ class CmdVelArbiter(Node):
             self.get_parameter("pivot_brake_speed_mps").value)
         self.pivot_arrive_radius_m = float(
             self.get_parameter("pivot_arrive_radius_m").value)
-        self.waypoint_lookahead_m = float(
-            self.get_parameter("waypoint_lookahead_m").value)
-        self.waypoint_lookahead_radius_m = float(
-            self.get_parameter("waypoint_lookahead_radius_m").value)
         self.waypoint_stop_arm_poses = int(
             self.get_parameter("waypoint_stop_arm_poses").value)
         self.waypoint_final_approach_m = float(
@@ -1531,42 +1521,18 @@ class CmdVelArbiter(Node):
 
             self.lookahead_distance = min(error_term, curvature_cap)
 
-            # Shorten the lookahead while closing on a waypoint. Pure pursuit
-            # always cuts the inside of a corner by roughly L^2/2R, so the
-            # lookahead that gives smooth tracking down a leg is the same
-            # thing that makes the rover miss the apex -- and the apexes here
-            # ARE the scored waypoints. Measured in sim at L=0.7, R=0.7:
-            # 0.7^2/(2*0.7) = 0.35 m of cut, against 31.4 cm actually observed
-            # at W9. Dropping to 0.35 m over the approach predicts ~9 cm.
-            #
-            # Only applied within waypoint_lookahead_radius_m of the next
-            # waypoint, so it buys accuracy exactly where it is scored and
-            # leaves the long legs on the full lookahead they track best with.
-            # Nearest waypoint, NOT cross_xy[next_stop_idx]: next_stop_idx only
-            # ever advances inside _pending_waypoint_stop, so with
-            # stop_at_waypoints=false it stays pinned at 1 and the shrink would
-            # follow one waypoint for the whole run.
-            #
-            # ONLY while the rover is essentially on the path. The error term
-            # above deliberately WIDENS the lookahead as cross-track error
-            # grows, so a big correction is asked for gently instead of at the
-            # curvature clamp; an unconditional min() here overrode that and
-            # left a 0.35 m lookahead trying to erase far more error than it
-            # can reach, which is the classic pure-pursuit failure.
-            #
-            # Measured in sim: after teleop left the rover 0.85 m off the path
-            # near a waypoint, it could not rejoin -- error grew to 1.44 m with
-            # 8 stuck-circling events. The same trap applies to an ArUco snap,
-            # which lands a correction of up to 0.7 m precisely near landmarks,
-            # i.e. near waypoints (see lookahead_max's note in README.md).
-            # Gating on err keeps the accuracy win, which only ever happens
-            # when err is already small, without disarming recovery.
-            if (self.waypoint_lookahead_m > 0.0 and self.cross_xy
-                    and err <= self.waypoint_lookahead_m):
-                d_wp = min(distance(self.car_pos, wp) for wp in self.cross_xy)
-                if d_wp <= self.waypoint_lookahead_radius_m:
-                    self.lookahead_distance = min(
-                        self.lookahead_distance, self.waypoint_lookahead_m)
+            # NOTE: a "shorten the lookahead near a waypoint" cap used to sit
+            # here, to cut pure pursuit's L^2/2R corner-cutting at the scored
+            # points. REMOVED 2026-09-04 -- measured against it, it bought
+            # nothing (mean waypoint error 0.40 cm with, 0.28 cm without: the
+            # gain came entirely from aiming at the waypoint on final approach,
+            # see the block further down) and it actively broke recovery: an
+            # unconditional cap overrode the error term above, which exists to
+            # WIDEN the lookahead so a large correction is asked for gently.
+            # With it, a rover displaced ~0.85 m near a waypoint could not
+            # rejoin (error grew to 1.44 m, 8 stuck-circling events) -- and a
+            # 0.7 m ArUco snap lands exactly that displacement, near landmarks,
+            # i.e. near waypoints. See lookahead_max's note in README.md.
 
         # A detour ends at its rejoin point, not at the goal. Only the route
         # whose end IS the global goal may declare the run complete.
