@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import math
 
 import numpy as np
 import open3d as o3d
@@ -41,7 +42,18 @@ MAX_RANGE         = 2.0    # ignore obstacles whose NEAREST point is beyond this
 # above the ground surface -- GROUND_MARGIN stays low so the object's base is
 # still captured and its true height can be measured. Raising GROUND_MARGIN to
 # 0.15 instead would lop the bottom off every object and under-report heights.
-MIN_OBSTACLE_HEIGHT = 0.15  # discard clusters shorter than this (m)
+MIN_OBSTACLE_HEIGHT = 0.25  # discard clusters shorter than this (m).
+# Raised from 0.15 2026-09-04: only BIG obstacles should stop the rover.
+#
+# Height is NOT what keeps terrain out -- it cannot be. Approaching a hill the
+# ground fit locks onto the flat ground at the rover's feet, so the hill is
+# measured against that and a 12 deg slope has already risen 0.25 m by the
+# 1.2 m stop distance. Any height threshold low enough to catch real rocks also
+# catches hills. That job belongs to TERRAIN_MAX_SLOPE_DEG below, which
+# classifies by rise-over-run instead, and to the FITTED ground plane.
+#
+# So this is purely a "don't bother with small stuff" floor. The trade is
+# explicit: anything shorter than this the rover will drive into.
 
 # Ground removal. The cloud is in camera_depth_optical_frame: +X right,
 # +Y DOWN, +Z forward. The URDF mounts the camera with rpy="0 0 0" relative
@@ -59,6 +71,16 @@ GROUND_BAND       = 0.15   # points below this height are candidates for the pla
 MAX_HEIGHT        = 2.00   # ignore anything higher than this above ground (m)
 FIT_GROUND_PLANE  = True   # fit the ground within the band instead of assuming it flat
 NORMAL_TOL_DEG    = 25.0   # reject a fitted plane tilted more than this from horizontal
+
+# Terrain rejection by STEEPNESS (see the filter in _cluster). A cluster whose
+# height gain over its own depth extent is shallower than this is ground the
+# rover can drive -- a hill, a bank, a ramp -- not something to stop for.
+# 30 deg sits above the yard's drivable slopes and well below the near-vertical
+# face of a rock or wall. terrain_min_depth is the depth a cluster must span
+# before its slope means anything at all; below it, no slope is measurable and
+# the cluster stays an obstacle.
+TERRAIN_MAX_SLOPE_DEG = 30.0
+TERRAIN_MIN_DEPTH     = 0.30
 
 # Frame the ObstacleArray is published in. The markers and the Bool stay in the
 # camera's own optical frame (RViz and the stop-gate neither need nor want a
@@ -99,6 +121,8 @@ class ObstacleDetector(Node):
             ('dbscan_eps', DBSCAN_EPS),
             ('max_range', MAX_RANGE),
             ('min_obstacle_height', MIN_OBSTACLE_HEIGHT),
+            ('terrain_max_slope_deg', TERRAIN_MAX_SLOPE_DEG),
+            ('terrain_min_depth', TERRAIN_MIN_DEPTH),
         ):
             self.declare_parameter(name, float(default))
         for name, default in (
@@ -215,7 +239,7 @@ class ObstacleDetector(Node):
 
         # 4. Filter clusters
         clusters = []
-        n_small = n_far = n_short = 0
+        n_small = n_far = n_short = n_terrain = 0
         for lbl in set(labels):
             if lbl == -1:
                 continue
@@ -235,10 +259,39 @@ class ObstacleDetector(Node):
             if top < self._p('min_obstacle_height'):
                 n_short += 1
                 continue
+
+            # TERRAIN vs OBSTACLE, by steepness rather than height.
+            #
+            # Height alone cannot tell a hill from a rock, and raising
+            # min_obstacle_height does not fix it. The ground plane is fitted
+            # only from points within ground_band of the local ground, so
+            # approaching a hill the fit locks onto the flat ground at the
+            # rover's feet and the hill is measured against THAT: a 20 deg
+            # slope has risen 0.44 m by 1.2 m out, clearing any sane height
+            # threshold. Push the threshold high enough to ignore hills and
+            # you ignore real rocks too.
+            #
+            # What actually separates them is rise over run. A hill climbs
+            # gradually and the camera sees its surface receding in Z; a rock
+            # or a wall presents a near-vertical face at roughly constant Z.
+            # So: measure the cluster's height gain against its depth extent
+            # and treat anything shallower than terrain_max_slope as ground.
+            #
+            # Fails toward DETECTING: a cluster with little depth extent has no
+            # measurable slope, so it stays an obstacle. That is the right bias
+            # -- a rock seen face-on is exactly that shape.
+            depth = float(c[:, 2].max() - c[:, 2].min())
+            if depth >= self._p('terrain_min_depth'):
+                rise = float(heights[sel].max() - heights[sel].min())
+                slope_deg = math.degrees(math.atan2(rise, depth))
+                if slope_deg < self._p('terrain_max_slope_deg'):
+                    n_terrain += 1
+                    continue
             clusters.append(c)
 
         self._stats.update({
             'raw_clusters': int(len({l for l in labels if l != -1})),
+            'terrain_rejected': int(n_terrain),
             'drop_small': n_small,
             'drop_far': n_far,
             'drop_short': n_short,

@@ -336,6 +336,50 @@ def generate_launch_description():
             ),
         ),
         DeclareLaunchArgument(
+            "avoid_enabled", default_value="false",
+            description=(
+                "Simple reactive obstacle avoidance in cmd_vel_arbiter: stop, rotate "
+                "away by the angle the geometry needs, drive a bounded distance, let "
+                "pure pursuit rejoin. NOT local_planner.py (no costed detours). "
+                "Requires pcl_obstacle_detector.py running to publish obstacles_topic. "
+                "Never halts the run by itself -- on giving up it drives the path "
+                "anyway and logs an error for the operator to act on."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "obstacles_topic", default_value="/obstacles/array",
+            description="ObstacleArray consumed by avoid_enabled (odom frame).",
+        ),
+        DeclareLaunchArgument(
+            "obstacle_stop_distance_m", default_value="1.2",
+            description=(
+                "Only obstacles closer than this AND inside the swept corridor "
+                "(rover_half_width_m + the obstacle's radius) trigger avoidance. Also "
+                "the second half of the terrain defence: at 1.2 m a 10 deg slope has "
+                "risen only 0.21 m, under the detector's 0.35 m height floor."
+            ),
+        ),
+        DeclareLaunchArgument("rover_half_width_m", default_value="0.45"),
+        DeclareLaunchArgument(
+            "avoid_turn_deg", default_value="35.0",
+            description=(
+                "FLOOR on one avoidance turn. The actual angle is computed from the "
+                "geometry (asin(clearance/range) - bearing) and capped at 80 deg -- a "
+                "fixed angle provably cannot clear the corridor at all ranges."
+            ),
+        ),
+        DeclareLaunchArgument("avoid_clear_m", default_value="1.2"),
+        DeclareLaunchArgument("avoid_clearance_margin_m", default_value="0.25"),
+        DeclareLaunchArgument("avoid_max_attempts", default_value="3"),
+        DeclareLaunchArgument(
+            "avoid_max_pitch_deg", default_value="12.0",
+            description=(
+                "Climb guard. Exceeding this during a clearing run ends that run and "
+                "rejoins the path rather than driving further up a slope. Advisory: it "
+                "warns and hands back, it does not stop the rover."
+            ),
+        ),
+        DeclareLaunchArgument(
             "pivot_timeout_s", default_value="45.0",
             description=(
                 "Hard ceiling on ONE in-place rotation. On expiry the pivot is "
@@ -543,6 +587,23 @@ def generate_launch_description():
                     LaunchConfiguration("pivots_csv"), value_type=str),
                 "pivot_max_angular_rps": ParameterValue(
                     LaunchConfiguration("pivot_max_angular_rps"), value_type=float),
+                "avoid_enabled": ParameterValue(
+                    LaunchConfiguration("avoid_enabled"), value_type=bool),
+                "obstacles_topic": LaunchConfiguration("obstacles_topic"),
+                "obstacle_stop_distance_m": ParameterValue(
+                    LaunchConfiguration("obstacle_stop_distance_m"), value_type=float),
+                "rover_half_width_m": ParameterValue(
+                    LaunchConfiguration("rover_half_width_m"), value_type=float),
+                "avoid_turn_deg": ParameterValue(
+                    LaunchConfiguration("avoid_turn_deg"), value_type=float),
+                "avoid_clear_m": ParameterValue(
+                    LaunchConfiguration("avoid_clear_m"), value_type=float),
+                "avoid_clearance_margin_m": ParameterValue(
+                    LaunchConfiguration("avoid_clearance_margin_m"), value_type=float),
+                "avoid_max_attempts": ParameterValue(
+                    LaunchConfiguration("avoid_max_attempts"), value_type=int),
+                "avoid_max_pitch_deg": ParameterValue(
+                    LaunchConfiguration("avoid_max_pitch_deg"), value_type=float),
                 "pivot_timeout_s": ParameterValue(
                     LaunchConfiguration("pivot_timeout_s"), value_type=float),
                 "pivot_tolerance_deg": ParameterValue(

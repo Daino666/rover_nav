@@ -82,12 +82,22 @@ from nav_msgs.msg import Odometry, Path
 from std_msgs.msg import Bool
 from std_srvs.srv import Trigger
 from visualization_msgs.msg import MarkerArray
+from rover_nav.msg import ObstacleArray
 
 
 def quat_to_yaw(qx, qy, qz, qw):
     siny_cosp = 2.0 * (qw * qz + qx * qy)
     cosy_cosp = 1.0 - 2.0 * (qy * qy + qz * qz)
     return math.atan2(siny_cosp, cosy_cosp)
+
+
+def quat_to_pitch(qx, qy, qz, qw):
+    """Pitch (rad), nose-up positive. Used only as a climb guard: the simple
+    avoidance below may steer the rover onto the toe of a slope, and this is
+    what stops it driving UP one."""
+    sinp = 2.0 * (qw * qy - qz * qx)
+    sinp = max(-1.0, min(1.0, sinp))
+    return math.asin(sinp)
 
 
 def wrap_angle(a):
@@ -390,6 +400,39 @@ class CmdVelArbiter(Node):
         # real pivot on this route (140 deg at 0.15 rad/s is ~16 s) so it only
         # fires on a genuine failure to rotate, never on a slow-but-working one.
         self.declare_parameter("pivot_timeout_s", 45.0)
+
+        # ---- simple reactive obstacle avoidance (avoid_enabled) ----
+        # Deliberately NOT local_planner.py, which searches costed detours with
+        # keepout discs and camera-visibility constraints. That is far more
+        # capable and far more to go wrong, and none of it has run on hardware.
+        # This is the smallest behaviour that gets past a rock: stop, rotate
+        # away, drive a BOUNDED distance, let pure pursuit pull back to the
+        # path. Default OFF -- the planned route is already collision-checked
+        # against the map, so this only earns its place against things the map
+        # does not know about.
+        self.declare_parameter("avoid_enabled", False)
+        self.declare_parameter("obstacles_topic", "/obstacles/array")
+        # Block only for something genuinely in the way. The bare
+        # /obstacle_detected Bool is "any cluster in range", which stops the
+        # rover for a rock metres off to the side; this gates on the corridor
+        # the rover actually sweeps.
+        self.declare_parameter("obstacle_stop_distance_m", 1.2)
+        self.declare_parameter("rover_half_width_m", 0.45)
+        # One avoidance step: rotate this far, then drive this far.
+        self.declare_parameter("avoid_turn_deg", 35.0)
+        self.declare_parameter("avoid_clear_m", 1.2)
+        # Bounded retries, then hold for the operator rather than shuffling
+        # sideways across the yard forever.
+        self.declare_parameter("avoid_max_attempts", 3)
+        # Extra lateral room beyond (half_width + obstacle radius) that one
+        # turn aims to open up. Without it the turn only grazes the corridor
+        # edge and any tracking error re-triggers it immediately.
+        self.declare_parameter("avoid_clearance_margin_m", 0.25)
+        # Climb guard. There is no way to sense "how far up a slope am I", but
+        # pitch says whether the rover has started up one at all. Exceeding
+        # this during a clearing run aborts and holds -- the rover may put its
+        # nose on the toe of a slope, never climb it.
+        self.declare_parameter("avoid_max_pitch_deg", 12.0)
         # How many route poses BEFORE a waypoint's own pose the stop may arm.
         # Poses run ~0.175 m apart, so 20 is roughly the last 3.5 m of the
         # approach -- comfortably more than waypoint_stop_arm_radius_m, while
@@ -486,6 +529,19 @@ class CmdVelArbiter(Node):
         self.pivot_arrive_radius_m = float(
             self.get_parameter("pivot_arrive_radius_m").value)
         self.pivot_timeout_s = float(self.get_parameter("pivot_timeout_s").value)
+        self.avoid_enabled = bool(self.get_parameter("avoid_enabled").value)
+        self.obstacles_topic = str(self.get_parameter("obstacles_topic").value)
+        self.obstacle_stop_distance_m = float(
+            self.get_parameter("obstacle_stop_distance_m").value)
+        self.rover_half_width_m = float(self.get_parameter("rover_half_width_m").value)
+        self.avoid_turn_rad = math.radians(
+            float(self.get_parameter("avoid_turn_deg").value))
+        self.avoid_clear_m = float(self.get_parameter("avoid_clear_m").value)
+        self.avoid_max_attempts = int(self.get_parameter("avoid_max_attempts").value)
+        self.avoid_clearance_margin_m = float(
+            self.get_parameter("avoid_clearance_margin_m").value)
+        self.avoid_max_pitch_rad = math.radians(
+            float(self.get_parameter("avoid_max_pitch_deg").value))
         self.waypoint_stop_arm_poses = int(
             self.get_parameter("waypoint_stop_arm_poses").value)
         self.waypoint_final_approach_m = float(
@@ -579,6 +635,15 @@ class CmdVelArbiter(Node):
         self.pivot_arrival_armed = False
         self.pivot_best_d = float("inf")
         self.pivot_started = None
+        # ---- simple reactive avoidance state (see _pending_avoid) ----
+        self.car_pitch = 0.0
+        self.obstacles = []          # [(x, y, radius)] in odom
+        self.avoid_phase = None      # None | "rotate" | "clear"
+        self.avoid_target_yaw = None
+        self.avoid_from = None       # where the clearing run started
+        self.avoid_attempts = 0
+        self.avoid_braking = False
+        self.avoid_brake_since = None
         # Stop-and-wait state. next_stop_idx indexes into cross_xy/cross_names
         # -- starts at 1 to skip the START row (index 0), reset to 1 whenever
         # _ensure_route (re)builds the route, same as cross_best.
@@ -674,6 +739,10 @@ class CmdVelArbiter(Node):
         if self.obstacle_stop_enabled and not self.local_plan_enabled:
             self.create_subscription(Bool, self.obstacle_topic, self._on_obstacle, 10)
 
+        if self.avoid_enabled and not self.local_plan_enabled:
+            self.create_subscription(
+                ObstacleArray, self.obstacles_topic, self._on_obstacles, 10)
+
         if self.local_plan_enabled:
             self.create_subscription(Path, self.local_plan_topic, self._on_local_plan, latched_qos)
             self.create_subscription(Bool, self.local_hold_topic, self._on_local_hold, 10)
@@ -694,9 +763,16 @@ class CmdVelArbiter(Node):
                     f"{path_length(self.test_path_points):.1f} m, anchor={self.test_path_anchor})")
         else:
             what = f"{len(WAYPOINTS)} waypoint(s)"
+        avoid_note = (
+            f"avoid: {self.obstacles_topic} (stop {self.obstacle_stop_distance_m:.1f} m, "
+            f"turn {math.degrees(self.avoid_turn_rad):.0f}deg, "
+            f"clear {self.avoid_clear_m:.1f} m)"
+            if self.avoid_enabled else "avoid: OFF"
+        )
         obstacle_note = (
-            f"obstacle stop: {self.obstacle_topic}" if self.obstacle_stop_enabled
-            else "obstacle stop: DISABLED"
+            f"{avoid_note} | "
+            + (f"obstacle stop: {self.obstacle_topic}" if self.obstacle_stop_enabled
+               else "obstacle stop: DISABLED")
         )
         self.get_logger().info(
             f"cmd_vel_arbiter ready: {what} -> {self.cmd_vel_topic} | "
@@ -720,6 +796,7 @@ class CmdVelArbiter(Node):
         self.car_pos = [msg.pose.pose.position.x, msg.pose.pose.position.y]
         q = msg.pose.pose.orientation
         self.car_yaw = quat_to_yaw(q.x, q.y, q.z, q.w)
+        self.car_pitch = quat_to_pitch(q.x, q.y, q.z, q.w)
         self.car_speed = msg.twist.twist.linear.x
         self.last_odom_time = time.monotonic()
 
@@ -1372,6 +1449,182 @@ class CmdVelArbiter(Node):
             throttle_duration_sec=0.5)
         return True
 
+    def _on_obstacles(self, msg):
+        self.obstacles = [(o.x, o.y, o.radius) for o in msg.obstacles]
+
+    def _blocking_obstacle(self):
+        """The nearest obstacle actually in the rover's way, or None.
+
+        "In the way" is the corridor the rover sweeps: ahead of it, within
+        stopping distance, and laterally within half the rover's width plus the
+        obstacle's own radius. The bare /obstacle_detected Bool cannot express
+        this -- it is len(clusters) > 0, so a rock metres off to the side reads
+        identical to one dead ahead, and the rover would stall constantly.
+
+        Returns (ahead, lateral, radius) in rover frame; lateral > 0 is left."""
+        if not self.obstacles or self.car_pos is None or self.car_yaw is None:
+            return None
+        c, s_ = math.cos(self.car_yaw), math.sin(self.car_yaw)
+        best = None
+        for ox, oy, r in self.obstacles:
+            dx, dy = ox - self.car_pos[0], oy - self.car_pos[1]
+            ahead = dx * c + dy * s_
+            lateral = -dx * s_ + dy * c
+            if ahead <= 0.0 or ahead > self.obstacle_stop_distance_m:
+                continue
+            if abs(lateral) > self.rover_half_width_m + r:
+                continue
+            if best is None or ahead < best[0]:
+                best = (ahead, lateral, r)
+        return best
+
+    def _pending_avoid(self):
+        """Stop, rotate away, drive clear, hand back to pure pursuit.
+
+        Deliberately the smallest thing that gets past a rock. It does not
+        plan, does not remember obstacles between attempts, and does not try to
+        find the BEST way round -- it displaces the rover far enough that the
+        path is no longer blocked and lets pure pursuit pull it back in. The
+        widening-with-error lookahead is what makes that rejoin work, which is
+        why the near-waypoint lookahead cap had to go.
+
+        Returns True while it owns the rover."""
+        if not self.avoid_enabled:
+            return False
+
+        # ---- rotating in place, away from the obstacle ----
+        if self.avoid_phase == "rotate":
+            if not self.avoid_braking:
+                speed = abs(self.car_speed) if self.car_speed is not None else 0.0
+                if self.avoid_brake_since is None:
+                    self.avoid_brake_since = time.monotonic()
+                timed_out = ((time.monotonic() - self.avoid_brake_since)
+                             >= self.pivot_brake_timeout_s)
+                if speed <= self.pivot_brake_speed_mps or timed_out:
+                    self.avoid_braking = True
+                else:
+                    self._publish(0.0, 0.0)
+                    return True
+            err = wrap_angle(self.avoid_target_yaw - self.car_yaw)
+            if abs(err) <= self.pivot_tolerance_rad:
+                self.avoid_phase = "clear"
+                self.avoid_from = list(self.car_pos)
+                self.get_logger().warn(
+                    f"avoid: turned to {math.degrees(self.car_yaw):+.0f}deg, "
+                    f"driving {self.avoid_clear_m:.1f} m clear")
+                return True
+            self._publish(0.0, math.copysign(self.pivot_max_angular_rps, err))
+            return True
+
+        # ---- driving clear, ignoring the path for a bounded distance ----
+        if self.avoid_phase == "clear":
+            # Climb guard: the rover may put its nose on the toe of a slope,
+            # never drive UP one. No way to sense how far up it is, but pitch
+            # says whether it has started, and that is enough to stop PUSHING.
+            #
+            # It does NOT e-stop. Nothing in this behaviour aborts the run by
+            # itself -- the operator decides that, watching the log. So this
+            # ends the clearing run early and hands straight back to pure
+            # pursuit, which steers toward the planned path (off the slope)
+            # rather than further up it.
+            if abs(self.car_pitch) > self.avoid_max_pitch_rad:
+                self.get_logger().error(
+                    f"avoid: {math.degrees(self.car_pitch):+.0f}deg pitch exceeds "
+                    f"{math.degrees(self.avoid_max_pitch_rad):.0f} -- stopping this clearing "
+                    f"run rather than climbing. Rejoining the path; take over on the "
+                    f"stick (LB) if it needs it.")
+                self.avoid_phase = None
+                self.avoid_attempts = 0
+                return False
+            gone = distance(self.car_pos, self.avoid_from)
+            blocked = self._blocking_obstacle()
+            if blocked is not None and gone > 0.15:
+                # Still boxed in after turning: try again from here, up to the
+                # attempt cap, then stop and let the operator sort it out.
+                self.avoid_attempts += 1
+                if self.avoid_attempts > self.avoid_max_attempts:
+                    # Out of attempts: hand back to pure pursuit rather than
+                    # e-stopping. Nothing here halts the run on its own -- the
+                    # operator makes that call from the log. Note this means
+                    # the rover WILL keep driving toward something it could not
+                    # get around, so this line is the one to watch for.
+                    self.get_logger().error(
+                        f"avoid: still blocked after {self.avoid_max_attempts} attempts "
+                        f"-- giving up on avoiding and rejoining the path. TAKE OVER on "
+                        f"the stick (LB) if it is heading into the obstacle.")
+                    self.avoid_phase = None
+                    self.avoid_attempts = 0
+                    return False
+                self._start_avoid(blocked)
+                return True
+            if gone >= self.avoid_clear_m:
+                self.get_logger().warn(
+                    f"avoid: cleared {gone:.2f} m -- rejoining the path")
+                self.avoid_phase = None
+                self.avoid_attempts = 0
+                return False
+            self._publish(self.base_velocity, 0.0)
+            return True
+
+        # ---- idle: is anything in the way? ----
+        blocked = self._blocking_obstacle()
+        if blocked is None:
+            self.avoid_attempts = 0
+            return False
+        self.avoid_attempts += 1
+        if self.avoid_attempts > self.avoid_max_attempts:
+            # Same policy as above: warn, hand back, never self-abort.
+            self.get_logger().error(
+                f"avoid: obstacle {blocked[0]:.2f} m ahead and {self.avoid_max_attempts} "
+                f"attempts used -- driving the path anyway. TAKE OVER on the stick (LB).",
+                throttle_duration_sec=2.0)
+            return False
+        self._start_avoid(blocked)
+        return True
+
+    def _start_avoid(self, blocked):
+        """Begin one avoidance step, turning AWAY from the obstacle."""
+        ahead, lateral, r = blocked
+        # Turn far enough to actually CLEAR the corridor, rather than a fixed
+        # amount. A fixed angle cannot work: the corridor is
+        # (half_width + radius) wide, so the angle that empties it depends on
+        # how far away the obstacle is.
+        #
+        # Measured in sim with a fixed 35 deg: an obstacle 1.19 m ahead moved
+        # only 1.19*sin(35) = 0.48 m sideways, stayed inside the 0.80 m
+        # corridor, and re-triggered 0.9 s later -- burning an attempt for no
+        # progress. The geometry wants asin(clearance / range), ~42 deg there.
+        d = max(math.hypot(ahead, lateral), 0.05)
+        bearing = math.atan2(lateral, ahead)
+        clearance = self.rover_half_width_m + r + self.avoid_clearance_margin_m
+        # Turning AWAY by delta moves the obstacle's bearing to (beta + delta),
+        # so clearing the corridor needs asin(clearance/d) - beta: whatever
+        # bearing the obstacle already has is angle you do not have to turn.
+        #
+        # This was "+ abs(bearing)" and it over-turned badly. The two agree
+        # when the obstacle is dead ahead (beta ~ 0), which is why the first
+        # sim rock looked right at 62 deg; the second sat at 0.79 m lateral --
+        # already at the 0.80 m corridor edge, needing ~20 deg -- and the sign
+        # error demanded 101 deg, hitting the 80 deg cap and swinging the rover
+        # nearly broadside for nothing.
+        need = max(0.0, math.asin(min(1.0, clearance / d)) - abs(bearing))
+        # avoid_turn_deg is a FLOOR now. The cap stops one step spinning the
+        # rover nearly broadside to the route.
+        turn = min(max(self.avoid_turn_rad, need), math.radians(80.0))
+        # Obstacle on the left (lateral > 0) -> turn right, and vice versa.
+        # Dead-centre (lateral ~ 0) has no better side from one depth frame, so
+        # pick one rather than pretending to know.
+        direction = -1.0 if lateral > 0.0 else 1.0
+        self.avoid_target_yaw = wrap_angle(self.car_yaw + direction * turn)
+        self.avoid_phase = "rotate"
+        self.avoid_braking = False
+        self.avoid_brake_since = None
+        self.get_logger().warn(
+            f"avoid: obstacle {ahead:.2f} m ahead, {lateral:+.2f} m lateral "
+            f"(r={r:.2f}) -- stopping and turning "
+            f"{math.degrees(direction * turn):+.0f}deg "
+            f"(attempt {self.avoid_attempts}/{self.avoid_max_attempts})")
+
     def _pending_waypoint_stop(self):
         """Stop-and-wait mode (stop_at_waypoints:=true): halt at each named
         waypoint in cross_xy/cross_names (skipping the START row at index 0
@@ -1508,6 +1761,11 @@ class CmdVelArbiter(Node):
             # every 3 s, marching the goal away. Cross-track error ran 5 m ->
             # 13 m and the run was unrecoverable. Clearing the timer on every
             # deliberate hold is what stops the cascade at its source.
+            self._stuck_since = None
+            return
+        if not detouring and self._pending_avoid():
+            # Same stale-timer hazard as pivots and waypoint stops: this branch
+            # returns before the stuck detector runs.
             self._stuck_since = None
             return
         if detouring:
